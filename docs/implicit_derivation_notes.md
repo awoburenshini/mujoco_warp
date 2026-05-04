@@ -446,24 +446,32 @@ $$
 -J q_{\mathrm{acc}} \in N_{K^*}(\lambda),
 $$
 
-equivalently the KKT condition of the **constrained** convex QP
+equivalently the KKT condition of the **constrained convex QP** (Gauss
+principle of least constraint at the acceleration level)
 
 $$
 q_{\mathrm{acc}}^* = \arg\min_{q_{\mathrm{acc}}}\;
-\tfrac{1}{2}\bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)^\top
-\widetilde{M}
-\bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)
+\tfrac{1}{2}\, q_{\mathrm{acc}}^\top \widetilde{M}\, q_{\mathrm{acc}}
+\;-\; q_{\mathrm{acc}}^\top F^{\mathrm{sm}}_k
 \;+\;\sum_i \mathbb{1}_{K_i}\!\bigl(J_i q_{\mathrm{acc}}\bigr),
 $$
 
-where $\widetilde{M}\, q_{\mathrm{acc}}^{\mathrm{free}} = F^{\mathrm{sm}}_k$;
-$K_i$ is the per-row admissible cone (the normal row uses $K_i = \mathbb{R}_{\ge 0}$,
-the tangential rows of one contact are jointly constrained by the friction
-cone); $\mathbb{1}_{K_i}$ is the convex indicator (zero on $K_i$, $+\infty$
-off); and the optimal multiplier
-$\lambda_i^* \in -\partial \mathbb{1}_{K_i}(J_i q_{\mathrm{acc}}^*)$
-recovers the cone complementarity. In short: **hard contact = indicator-function
-form**.
+where $K_i$ is the per-row admissible cone (the normal row uses
+$K_i = \mathbb{R}_{\ge 0}$; the tangential rows of one contact are jointly
+constrained by the friction cone) and $\mathbb{1}_{K_i}$ is its convex
+indicator (zero on $K_i$, $+\infty$ off). The KKT stationarity reads
+
+$$
+\widetilde{M}\, q_{\mathrm{acc}} - F^{\mathrm{sm}}_k + \sum_i J_i^\top \mu_i = 0,
+\qquad
+\mu_i \in \partial \mathbb{1}_{K_i}(J_i q_{\mathrm{acc}}) = N_{K_i}(J_i q_{\mathrm{acc}}),
+$$
+
+so setting $\lambda := -\mu$ recovers the CCP exactly:
+$\widetilde{M}\, q_{\mathrm{acc}} = F^{\mathrm{sm}}_k + J^\top \lambda$ from
+the stationarity, and
+$-J_i q_{\mathrm{acc}} \in N_{K_i^*}(\lambda_i)$ from polarity of the indicator
+subgradient. In short: **hard contact = indicator-function form**.
 
 ### From CCP to the convex program — two relaxations
 
@@ -505,7 +513,45 @@ $D_i \to \infty$ and $a_{\mathrm{ref}} \to 0$.
 
 ### What the solver actually solves
 
-After both relaxations:
+After both relaxations the convex program is, in the same Gauss form as the
+target QP,
+
+$$
+q_{\mathrm{acc}}^* \;=\; \arg\min_{q_{\mathrm{acc}}}\;
+\tfrac{1}{2}\, q_{\mathrm{acc}}^\top \widetilde{M}\, q_{\mathrm{acc}}
+\;-\; q_{\mathrm{acc}}^\top F^{\mathrm{sm}}_k
+\;+\;\sum_i s_i(r_i),
+\qquad r_i = J_i q_{\mathrm{acc}} - a_{\mathrm{ref},i}.
+$$
+
+KKT stationarity
+
+$$
+\widetilde{M}\, q_{\mathrm{acc}}^* - F^{\mathrm{sm}}_k - J^\top \lambda^* = 0,
+\qquad
+\lambda_i^* = -s_i'(r_i^*),
+$$
+
+reproduces the IMPLICITFAST balance, so the contact force we owed is
+$f_{c,k} = R_c^\top \lambda_c^*$.
+
+**Rewrite into the form the code solves.** Define
+$q_{\mathrm{acc}}^{\mathrm{free}} := \widetilde{M}^{-1} F^{\mathrm{sm}}_k$ (the
+unconstrained minimum of the smooth part — already computed and factorized by
+the IMPLICITFAST step). Completing the square,
+
+$$
+\tfrac{1}{2}\, q_{\mathrm{acc}}^\top \widetilde{M}\, q_{\mathrm{acc}}
+\;-\; q_{\mathrm{acc}}^\top F^{\mathrm{sm}}_k
+\;=\;
+\tfrac{1}{2}\bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)^\top
+\widetilde{M}
+\bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)
+\;-\;
+\underbrace{\tfrac{1}{2}\bigl(q_{\mathrm{acc}}^{\mathrm{free}}\bigr)^\top \widetilde{M}\, q_{\mathrm{acc}}^{\mathrm{free}}}_{\text{constant in }q_{\mathrm{acc}}},
+$$
+
+and the convex program becomes (same arg min, constant dropped)
 
 $$
 \boxed{\;\;
@@ -513,25 +559,14 @@ q_{\mathrm{acc}}^* \;=\; \arg\min_{q_{\mathrm{acc}}}\;
 \tfrac{1}{2}\bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)^\top
 \widetilde{M}
 \bigl(q_{\mathrm{acc}} - q_{\mathrm{acc}}^{\mathrm{free}}\bigr)
-\;+\;\sum_i s_i(r_i),
-\qquad
-r_i = J_i q_{\mathrm{acc}} - a_{\mathrm{ref},i}.
+\;+\;\sum_i s_i(r_i).
 \;\;}
 $$
 
-First-order optimality
-
-$$
-\widetilde{M}\bigl(q_{\mathrm{acc}}^* - q_{\mathrm{acc}}^{\mathrm{free}}\bigr) - J^\top \lambda^* = 0,
-\qquad
-\lambda_i^* = -s_i'(r_i^*),
-$$
-
-reproduces the IMPLICITFAST balance, and the contact force we owed is
-
-$$
-f_{c,k} \;=\; R_c^\top \lambda_c^*.
-$$
+This is the "distance to the free solution under metric $\widetilde{M}$" form
+that mujoco-warp's solver iterates on: $q_{\mathrm{acc}}^{\mathrm{free}}$ is
+already in hand from the IMPLICITFAST step, so the inner loop never has to
+re-evaluate $F^{\mathrm{sm}}_k$.
 
 ### Concrete choices in mujoco-warp
 

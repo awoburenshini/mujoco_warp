@@ -68,6 +68,45 @@ def _kinematics_branch(
 ):
   worldid, branchid = wp.tid()
 
+  # one branch = one full root-to-leaf chain. example -- the ant body tree:
+  #
+  #   world(0)
+  #     └─ torso(1)  [free]
+  #         ├─ leg1(2)  [hinge: hip1]  ─── ankle1(3)  [hinge: ankle1]    leaf
+  #         ├─ leg2(4)  [hinge: hip2]  ─── ankle2(5)  [hinge: ankle2]    leaf
+  #         ├─ leg3(6)  [hinge: hip3]  ─── ankle3(7)  [hinge: ankle3]    leaf
+  #         └─ leg4(8)  [hinge: hip4]  ─── ankle4(9)  [hinge: ankle4]    leaf
+  #
+  # 4 leaves => nbranch=4, each branch a full path from torso to its ankle:
+  #   branch 0:  torso(1) -> leg1(2) -> ankle1(3)
+  #   branch 1:  torso(1) -> leg2(4) -> ankle2(5)
+  #   branch 2:  torso(1) -> leg3(6) -> ankle3(7)
+  #   branch 3:  torso(1) -> leg4(8) -> ankle4(9)
+  # body_branches = [1,2,3, 1,4,5, 1,6,7, 1,8,9]   <- torso(1) appears 4x.
+  #
+  # branches overlap on shared ancestors. each thread walks its own chain
+  # from the root, so it never reads an xpos slot that another thread is
+  # meant to fill: shared ancestors just get recomputed redundantly. all
+  # 4 threads compute the same value for xpos_out[..., torso] from the
+  # same qpos, so the concurrent write is a benign race. trades a few
+  # extra flops for zero inter-thread sync.
+  # construction: io.py: branches = [ancestor_chain(l) for l in leaves].
+  #
+  # ----- formula notation used in comments below -----
+  # $$q_a,\;q_j,\;q_{0,j}$$
+  #   qpos elements (scalar joint coordinates and their rest values)
+  # $$\text{xpos}_i,\;\text{xquat}_i$$
+  #   body i's world-frame position (vec3) and orientation (unit quaternion)
+  # $$\text{xanchor}_j,\;\text{xaxis}_j$$
+  #   joint j's anchor point and axis, expressed in world frame
+  # $$p_j^{\text{local}},\;\hat{a}_j^{\text{local}}$$
+  #   joint j's anchor / axis, expressed in the body-local frame
+  # $$T_i^{w},\;R_i,\;\text{quat}_i$$
+  #   body i's world-frame homogeneous transform / rotation matrix / quaternion
+  # $$\otimes$$
+  #   quaternion multiplication
+  # $$\widehat{(\cdot)}$$
+  #   unit-norm projection (quaternion normalisation)
   start = body_branch_start[branchid]
   end = body_branch_start[branchid + 1]
 
@@ -79,6 +118,27 @@ def _kinematics_branch(
     jntadr = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
 
+    # ----- free joint shortcut --------------------------------------------
+    # jntnum = number of joints attached to this body. a free joint must be
+    # the body's *only* joint (MuJoCo spec), so the gate is jntnum == 1.
+    # (jntnum == 0 means body welded to parent; jntnum > 1 means composite
+    # joints like 3 slides + 3 hinges -- both fall through to the general
+    # path below.)
+    #
+    # qpos layout for a free joint, starting at a = jnt_qposadr[jntadr]:
+    #   qpos[a+0..a+2]  =  x, y, z             (position, 3 numbers)
+    #   qpos[a+3..a+6]  =  qw, qx, qy, qz      (orientation quaternion, 4)
+    # = 7 numbers total (3 + 4). qvel uses 6 (3 linear + 3 angular).
+    #
+    # for a free joint the body's world pose *is* its qpos -- no parent
+    # compose, no joint composition. just copy. for the ant: torso owns
+    # the only freejoint, qadr=0, so qpos[0..2] is torso xyz, qpos[3..6]
+    # its quaternion. that's why ant_demo.py printed qpos[:3] as the torso
+    # position (only works because torso happens to be the freejoint body).
+    #
+    # let i = bodyid, a = qadr. then:
+    # $$\text{xpos}_i = (q_a,\,q_{a+1},\,q_{a+2}),\qquad \text{xquat}_i = \widehat{(q_{a+3},\,q_{a+4},\,q_{a+5},\,q_{a+6})}$$
+    # (the hat = quaternion normalisation, keeps it on the unit sphere)
     if jntnum == 1:
       jnt_type_ = jnt_type[jntadr]
       if jnt_type_ == JointType.FREE:
@@ -93,12 +153,12 @@ def _kinematics_branch(
         xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
         continue
 
-    # regular or no joints
-    # apply fixed translation and rotation relative to parent
+    # ----- regular / no joints: start from the body's rest offset -----
+    # $$T_i^{w} \;\leftarrow\; T_{p(i)}^{w}\;T_i^{\text{rest}}$$
+    # (rest pose = mocap pose if this is a mocap body, else (body_pos, body_quat))
     jnt_pos_id = worldid % jnt_pos.shape[0]
     pid = body_parentid[bodyid]
 
-    # mocap bodies have world body as parent
     mocapid = body_mocapid[bodyid]
     if mocapid >= 0:
       xpos = mocap_pos_in[worldid, mocapid]
@@ -107,30 +167,57 @@ def _kinematics_branch(
       xpos = body_pos[worldid % body_pos.shape[0], bodyid]
       xquat = body_quat[worldid % body_quat.shape[0], bodyid]
 
+    # parent-compose: lift the local rest pose into world frame using the
+    # parent's already-computed world pose (branches walk root-first, so
+    # xpos_out/xquat_out[..., pid] are valid here).
+    # notation: q_a / q_j (italic) = qpos elements (joint coordinates);
+    #           quat / xquat       = quaternions; (X) = quaternion multiply.
+    # $$x_i^{w} \;=\; R_{p(i)}^{w}\,x_i^{\text{local}} + x_{p(i)}^{w}$$
+    # $$\text{quat}_i^{w} \;=\; \text{quat}_{p(i)}^{w} \otimes \text{quat}_i^{\text{local}}$$
+    # rot_vec_quat(v, r) rotates vec v by quat r; mul_quat(a, b) = a (X) b.
+    # at this point xpos/xquat is the body's rest pose in world frame --
+    # the joint-variable contribution is added in the loop below.
     if pid >= 0:
       xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
       xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
 
+    # ----- apply each joint at this body in order -----
+    # $$T_i^{w} \;\leftarrow\; T_i^{w}\;T_j^{\text{joint}}(q_j),\qquad j = \text{jntadr},\,\text{jntadr}+1,\,\ldots$$
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
       jnt_type_ = jnt_type[jntadr]
       jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+      # joint anchor (pivot) and axis pushed into world frame
+      # $$\text{xanchor}_j = R_i\,p_j^{\text{local}} + x_i,\qquad \text{xaxis}_j = R_i\,\hat{a}_j^{\text{local}}$$
       xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
       xaxis = math.rot_vec_quat(jnt_axis_, xquat)
 
       if jnt_type_ == JointType.BALL:
+        # $$\Delta\text{quat} = \widehat{(q_a,\,q_{a+1},\,q_{a+2},\,q_{a+3})},\quad \text{xquat}_i \;\leftarrow\; \text{xquat}_i \otimes \Delta\text{quat}$$
         qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
         qloc = wp.normalize(qloc)
         xquat = math.mul_quat(xquat, qloc)
-        # correct for off-center rotation
+        # off-center ball: same reasoning as HINGE below. enforce
+        # $$\text{xanchor}_j = x_i + R_i\,p_j^{\text{local}}$$
+        # with the rotated R_i (now updated by the line above):
+        # $$x_i \;\leftarrow\; \text{xanchor}_j - R_i\,p_j^{\text{local}}$$
         xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
       elif jnt_type_ == JointType.SLIDE:
+        # $$x_i \;\mathrel{+}=\; \text{xaxis}_j \,\bigl(q_j - q_{0,j}\bigr)$$
         xpos += xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
       elif jnt_type_ == JointType.HINGE:
+        # $$\Delta\text{quat} = \mathrm{aa2quat}\!\bigl(\hat{a}_j,\;q_j - q_{0,j}\bigr),\quad \text{xquat}_i \;\leftarrow\; \text{xquat}_i \otimes \Delta\text{quat}$$
         qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
         qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
         xquat = math.mul_quat(xquat, qloc_)
-        # correct for off-center rotation
+        # off-center hinge: the rotation pivots around $xanchor_j$ (the hinge point),
+        # not around $x_i$ (the body origin). $xanchor_j$ was captured *before* the
+        # rotation was applied, so it must still satisfy
+        # $$\text{xanchor}_j = x_i + R_i\,p_j^{\text{local}}$$
+        # with the new R_i (now rotated by Delta q above). solving for x_i:
+        # $$x_i \;\leftarrow\; \text{xanchor}_j - R_i\,p_j^{\text{local}}$$
+        # without this line, the body would orbit its own origin instead of
+        # pivoting on the hinge point -- e.g. a door would swing through the wall.
         xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
 
       xanchor_out[worldid, jntadr] = xanchor
@@ -361,6 +448,13 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
+  # Walk the kinematic tree once: for each body i with parent p(i) and joint j,
+  # $$T_i^{w}(q) \;=\; T_{p(i)}^{w}\;T_i^{\text{rest}}\;T_j^{\text{joint}}(q_j).$$
+  # Outputs (per world):
+  # $$\text{xpos}_i \in \mathbb{R}^{3}\qquad\text{body position in world frame}$$
+  # $$\text{xquat}_i \in \mathbb{H}\qquad\text{body orientation (unit quaternion)}$$
+  # $$\text{xanchor}_j \in \mathbb{R}^{3}\qquad\text{joint pivot point in world frame}$$
+  # $$\text{xaxis}_j \in \mathbb{R}^{3}\qquad\text{joint axis direction in world frame}$$
   wp.launch(
     _kinematics_branch,
     dim=(d.nworld, m.nbranch),
@@ -385,6 +479,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xpos, d.xquat, d.xanchor, d.xaxis],
   )
 
+  # $$R_i = R(\mathrm{quat}_i)\in SO(3)\qquad\text{(quaternion} \to 3{\times}3\text{ rotation matrix)}$$
   wp.launch(
     _compute_body_matrices,
     dim=(d.nworld, m.nbody),
@@ -392,6 +487,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xmat],
   )
 
+  # $$x_i^{I} = x_i + R_i\, p_i^{I,\text{local}},\qquad R_i^{I} = R_i\, R_i^{I,\text{local}}\quad\text{(inertial frame)}$$
   wp.launch(
     _compute_body_inertial_frames,
     dim=(d.nworld, m.nbody),
@@ -399,6 +495,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xipos, d.ximat],
   )
 
+  # $$x_g^{w} = x_{b(g)} + R_{b(g)}\, p_g^{\text{local}},\qquad R_g^{w} = R_{b(g)}\, R_g^{\text{local}}$$
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
@@ -406,6 +503,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.geom_xpos, d.geom_xmat],
   )
 
+  # $$x_s^{w} = x_{b(s)} + R_{b(s)}\, p_s^{\text{local}},\qquad R_s^{w} = R_{b(s)}\, R_s^{\text{local}}$$
   wp.launch(
     _site_local_to_global,
     dim=(d.nworld, m.nsite),

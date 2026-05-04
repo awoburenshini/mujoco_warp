@@ -545,7 +545,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     smooth.factor_m(m, d)
 
   if m.opt.run_collision_detection:
-    # $$\mathcal{C}=\bigl\{(p_k,\,n_k,\,\phi_k,\,\mu_k)\bigr\}_{k=1}^{n_{\text{con}}}\qquad\text{broadphase $\to$ narrowphase}$$
+    # $$\mathcal{C}=\bigl\{(p_k,\,n_k,\,\phi_k,\,\mu_k)\bigr\}_{k=1}^{n_{\text{con}}}\qquad\text{broadphase}\to\text{narrowphase}$$
     collision_driver.collision(m, d)
 
   # $$J(q)\in\mathbb{R}^{n_{\text{efc}}\times n_v},\quad a_{\text{ref}},\;R\qquad\text{(constraint Jacobian \& reference)}$$

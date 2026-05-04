@@ -512,26 +512,51 @@ def implicit(m: Model, d: Data):
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
 
+  Everything below depends on $q$ only (not $\\dot q$ or $\\ddot q$).
+
   Args:
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
+  # $$T_i^{w}(q) = T_{p(i)}^{w}\;T_i^{\text{joint}}(q),\qquad \forall\, i\in\text{bodies}$$
   smooth.kinematics(m, d)
+
+  # $$\bar{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x_j}{\sum_{j\in\mathcal{S}(i)} m_j},\quad \bar{I}_i = \sum_{j\in\mathcal{S}(i)} I_j^{\text{CoM}}$$
   smooth.com_pos(m, d)
+
+  # $$x_c^{w} = T_{\text{body}(c)}^{w}\, p_c^{\text{local}}\quad\text{(cameras and lights inherit body transforms)}$$
   smooth.camlight(m, d)
+
+  # $$v_k^{w} = T_{\text{body}(k)}^{w}\, v_k^{\text{rest}}\quad\text{(deformable mesh vertices)}$$
   smooth.flex(m, d)
+
+  # $$L_t(q)=\sum_{k}\lVert p_{k+1}-p_{k}\rVert,\qquad J_t=\frac{\partial L_t}{\partial q}$$
   smooth.tendon(m, d)
+
+  # $$M(q)\;\in\;\mathbb{R}^{n_v\times n_v}\quad\text{via the Composite Rigid Body algorithm}$$
   smooth.crb(m, d)
+
+  # $$M(q)\;\mathrel{+}=\;J_t^{\top}\, A_t\, J_t\qquad\text{(reflected tendon armature)}$$
   smooth.tendon_armature(m, d)
+
   if factorize:
+    # $$M(q) = L\, D\, L^{\top}\quad\text{(sparse } LDL^{\top}\text{, or dense Cholesky)}$$
     smooth.factor_m(m, d)
+
   if m.opt.run_collision_detection:
+    # $$\mathcal{C}=\bigl\{(p_k,\,n_k,\,\phi_k,\,\mu_k)\bigr\}_{k=1}^{n_{\text{con}}}\qquad\text{broadphase $\to$ narrowphase}$$
     collision_driver.collision(m, d)
+
+  # $$J(q)\in\mathbb{R}^{n_{\text{efc}}\times n_v},\quad a_{\text{ref}},\;R\qquad\text{(constraint Jacobian \& reference)}$$
   constraint.make_constraint(m, d)
+
   # TODO(team): remove False after island features are more complete
   if False and not (m.opt.disableflags & DisableBit.ISLAND):
+    # $$\text{efc-graph}\;\longrightarrow\;\mathcal{I}_1\sqcup\mathcal{I}_2\sqcup\cdots\sqcup\mathcal{I}_K\quad\text{(disjoint constraint islands)}$$
     island.island(m, d)
+
+  # $$\ell_u(q),\qquad \frac{\partial \ell_u}{\partial q}\quad\text{(actuator length and moment arm)}$$
   smooth.transmission(m, d)
 
 

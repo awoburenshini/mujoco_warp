@@ -1017,10 +1017,14 @@ def forward(m: Model, d: Data):
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
       m.callback.control(m, d)
+  # $$f_u = g_u(\ell_u,\dot\ell_u)\,u + b_u(\ell_u,\dot\ell_u),\qquad \tau_{\text{act}} = J_u^{\top} f_u\quad\text{(actuator force} \to \text{generalized torque)}$$
   fwd_actuation(m, d)
+  # $$\tau_{\text{smooth}} = \tau_{\text{passive}} + \tau_{\text{actuator}} + \tau_{\text{applied}} - C(q,\dot q),\qquad \ddot q_{\text{smooth}} = M^{-1}\,\tau_{\text{smooth}}\quad\text{(unconstrained acceleration via }LDL^{\top}\text{)}$$
   fwd_acceleration(m, d, factorize=True)
 
+  # $$\ddot q^{*} = \arg\min_{\ddot q}\;\tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}})\quad\text{s.t. } J\ddot q \succeq a_{\text{ref}}\quad\text{(constraint projection)}$$
   solver.solve(m, d)
+  # $$y^{\text{acc}} = h^{\text{acc}}(q,\dot q,\ddot q,\,f^{\text{contact}})\quad\text{(force/torque/accelerometer/contact-force sensors)}$$
   sensor.sensor_acc(m, d)
 
 

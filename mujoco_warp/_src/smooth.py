@@ -449,12 +449,12 @@ def kinematics(m: Model, d: Data):
   current joint positions and any attached mocap bodies.
   """
   # Walk the kinematic tree once: for each body i with parent p(i) and joint j,
-  # $$T_i^{w}(q) \;=\; T_{p(i)}^{w}\;T_i^{\text{rest}}\;T_j^{\text{joint}}(q_j).$$
-  # Outputs (per world):
-  # $$\text{xpos}_i \in \mathbb{R}^{3}\qquad\text{body position in world frame}$$
-  # $$\text{xquat}_i \in \mathbb{H}\qquad\text{body orientation (unit quaternion)}$$
-  # $$\text{xanchor}_j \in \mathbb{R}^{3}\qquad\text{joint pivot point in world frame}$$
-  # $$\text{xaxis}_j \in \mathbb{R}^{3}\qquad\text{joint axis direction in world frame}$$
+  # $$G_i(q) \;=\; G_{p(i)}(q)\;G^{\text{rest}}_i\;G^{\text{joint}}_j(q_j),\qquad G_i(q) := \begin{bmatrix} R_i & x_i \\ 0 & 1 \end{bmatrix} \in SE(3).$$
+  # Outputs (per world; world frame is implicit on bare symbols):
+  # $$x_i = \text{xpos}_i \in \mathbb{R}^{3}\qquad\text{body origin in world frame}$$
+  # $$\text{xquat}_i \in \mathbb{H}\qquad\text{body orientation (unit quaternion encoding } R_i \text{)}$$
+  # $$a_j = \text{xanchor}_j \in \mathbb{R}^{3}\qquad\text{joint pivot point in world frame}$$
+  # $$\bar{\omega}^{\text{world}}_j \,/\, \bar{v}^{\text{world}}_j = \text{xaxis}_j \in \mathbb{R}^{3}\qquad\text{joint axis (rot for hinge, trans for slide) in world frame}$$
   wp.launch(
     _kinematics_branch,
     dim=(d.nworld, m.nbranch),
@@ -495,7 +495,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xipos, d.ximat],
   )
 
-  # $$x_g^{w} = x_{b(g)} + R_{b(g)}\, p_g^{\text{local}},\qquad R_g^{w} = R_{b(g)}\, R_g^{\text{local}}$$
+  # $$x_g = x_{b(g)} + R_{b(g)}\, p^{\text{local}}_g,\qquad R_g = R_{b(g)}\, R^{\text{local}}_g$$
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
@@ -503,7 +503,7 @@ def kinematics(m: Model, d: Data):
     outputs=[d.geom_xpos, d.geom_xmat],
   )
 
-  # $$x_s^{w} = x_{b(s)} + R_{b(s)}\, p_s^{\text{local}},\qquad R_s^{w} = R_{b(s)}\, R_s^{\text{local}}$$
+  # $$x_s = x_{b(s)} + R_{b(s)}\, p^{\text{local}}_s,\qquad R_s = R_{b(s)}\, R^{\text{local}}_s$$
   wp.launch(
     _site_local_to_global,
     dim=(d.nworld, m.nsite),
@@ -665,41 +665,42 @@ def _cdof(
   # Data out:
   cdof_out: wp.array2d[wp.spatial_vector],
 ):
-  # Each branch fills $S_k\big|_{\bar{x}_{\text{root}(b(k))}} = [\hat\omega_k;\;\hat\omega_k\times(\bar{x}_{\text{root}(b(k))}-a_k)+\hat v_k]$
-  # by specializing $(\hat\omega_k,\hat v_k)$ per joint type. See com_pos() for the spatial-twist derivation.
+  # Each branch fills the spatial motion subspace at subtree-CoM reference (matches docs/inertia.md eq for $S_k$):
+  # $$S_k = \begin{bmatrix}\bar{\omega}^{\text{world}}_k \\ \bar{\omega}^{\text{world}}_k \times (\tilde{x}_{r(k)} - a_k) + \bar{v}^{\text{world}}_k\end{bmatrix}$$
+  # by specializing $(\bar{\omega}^{\text{world}}_k,\,\bar{v}^{\text{world}}_k)$ per joint type. See com_pos() for the SE(3) derivation.
   worldid, jntid = wp.tid()
   bodyid = jnt_bodyid[jntid]
   dofid = jnt_dofadr[jntid]
   jnt_type_ = jnt_type[jntid]
-  xaxis = xaxis_in[worldid, jntid]                                            # world-frame joint axis (rot or trans dir)
-  # xmat = (R_b^w)^T, so xmat[k] = column k of R_b^w = body's local k-th axis expressed in world frame.
+  xaxis = xaxis_in[worldid, jntid]                                            # $\bar{\omega}^{\text{world}}_k$ (hinge) or $\bar{v}^{\text{world}}_k$ (slide), world frame
+  # xmat = (R_b)^T, so xmat[k] = column k of R_b = body's local k-th axis expressed in world frame.
   # Used as rotation generators for ball / free's rotational dofs (free joint angular velocity is body-local).
   xmat = wp.transpose(xmat_in[worldid, bodyid])
 
-  # offset = $\bar{x}_{\text{root}(b(k))} - a_k$ (com-anchor vector, the cross-product argument inside $S_k$'s linear part)
+  # offset = $\tilde{x}_{r(k)} - a_k$  (com-anchor vector, the cross-product argument inside $S_k$'s linear part)
   offset = subtree_com_in[worldid, body_rootid[bodyid]] - xanchor_in[worldid, jntid]
 
   res = cdof_out[worldid]
   if jnt_type_ == JointType.FREE:
-    # 6 dofs. Translations: $\hat\omega=0,\;\hat v=e_{\{x,y,z\}}^{\,w}$ (world basis), $S=[0;\hat v]$ (offset drops out).
+    # 6 dofs. Translations: $\bar{\omega}^{\text{world}}_k=0,\;\bar{v}^{\text{world}}_k=e_{\{x,y,z\}}$ (world basis), $S_k=[0;\bar{v}^{\text{world}}_k]$ (offset drops out).
     res[dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     res[dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     res[dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-    # Rotations: $\hat v=0,\;\hat\omega=$body's local axes in world ($xmat[k]$), $S=[\hat\omega;\;\hat\omega\times\text{offset}]$.
+    # Rotations: $\bar{v}^{\text{world}}_k=0,\;\bar{\omega}^{\text{world}}_k=$body's local axes in world ($xmat[k]$), $S_k=[\bar{\omega}^{\text{world}}_k;\;\bar{\omega}^{\text{world}}_k\times\text{offset}]$.
     res[dofid + 3] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
     res[dofid + 4] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
     res[dofid + 5] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
   elif jnt_type_ == JointType.BALL:
-    # 3 rotation dofs about body's local axes -- same $(\hat\omega,\hat v)=(xmat[k],0)$ pattern as free's rotation dofs.
+    # 3 rotation dofs about body's local axes -- same $(\bar{\omega}^{\text{world}}_k,\bar{v}^{\text{world}}_k)=(xmat[k],0)$ pattern as free's rotation dofs.
     res[dofid + 0] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
     res[dofid + 1] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
     res[dofid + 2] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
   elif jnt_type_ == JointType.SLIDE:
-    # Pure translation along world-frame xaxis: $\hat\omega=0,\;\hat v=$ xaxis. $S=[0;\hat v]$, offset drops out.
+    # Pure translation along world-frame xaxis: $\bar{\omega}^{\text{world}}_k=0,\;\bar{v}^{\text{world}}_k=$ xaxis. $S_k=[0;\bar{v}^{\text{world}}_k]$, offset drops out.
     res[dofid] = wp.spatial_vector(wp.vec3(0.0), xaxis)
   elif jnt_type_ == JointType.HINGE:
-    # Pure rotation about line through $a_k$ with axis xaxis: $\hat\omega=$ xaxis, $\hat v=0$.
-    # $S=[\hat\omega;\;\hat\omega\times(\bar{x}-a_k)]=[$xaxis$;\;$xaxis$\times$offset$]$.
+    # Pure rotation about line through $a_k$ with axis xaxis: $\bar{\omega}^{\text{world}}_k=$ xaxis, $\bar{v}^{\text{world}}_k=0$.
+    # $S_k=[\bar{\omega}^{\text{world}}_k;\;\bar{\omega}^{\text{world}}_k\times(\tilde{x}_{r(k)}-a_k)]=[$xaxis$;\;$xaxis$\times$offset$]$.
     res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
 
 
@@ -728,16 +729,19 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  # $$\bar{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x^{I}_j}{\sum_{j\in\mathcal{S}(i)} m_j}\quad\text{(world-frame subtree CoM; world is implicit, no overline-to-superscript needed)}$$
+  # $$\tilde{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x^{I}_j}{\sum_{j\in\mathcal{S}(i)} m_j}\quad\text{(world-frame subtree CoM, matches docs/inertia.md notation $\tilde{x}$)}$$
   
   wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
 
-  # Inertia tensor frame discipline (extending kinematics' $^I$ convention):
-  #   $\mathcal{I}^{I,\text{local}}_i$  := body-stored diagonal in inertial-frame basis  (= $m.body\_inertia$, 3 nums)
-  #   $\mathcal{I}_i\!\big|_p$           := same tensor in world-frame basis, about reference point $p$
-  # The $\,^{I,\text{local}}\,$ tag follows kinematics' $p^{I,\text{local}}$ / $R^{I,\text{local}}$ pattern: an inertial-frame-related quantity given in local (body) coordinates.
-  # $$\mathcal{I}_i\big|_{\bar{x}_{\text{root}(i)}} \;=\; R^{I}_i\,\operatorname{diag}\!\bigl(\mathcal{I}^{I,\text{local}}_i\bigr)\,(R^{I}_i)^{\top} \;+\; m_i\,[d]_\times[d]_\times^{\top},\;\; d \,=\, x^{I}_i - \bar{x}_{\text{root}(i)}$$
-  # (rotate the inertial-basis diagonal into world basis with $R^{I}_i\!=\!d.ximat$, then parallel-axis to subtree CoM; packed as vec10.)
+  # Inertia tensor frame discipline (extending kinematics' $^I$ convention; matches docs/inertia.md):
+  #   $I^{\text{local}}_i$              := body-stored diagonal in inertial-frame (principal-axis) basis (= $m.body\_inertia$, 3 nums)
+  #   $I^{\text{world}}_i$              := 3$\times$3 rotational inertia in world basis, about body's own CoM
+  #   $\mathcal{I}^{\text{world}}_i := \operatorname{diag}(I^{\text{world}}_i,\, m_i I)$  (6$\times$6 spatial inertia, world basis, body CoM ref)
+  #   $\mathcal{I}^{\text{world}}_i\!\big|_p$  := same 6$\times$6 spatial inertia parallel-axis-translated to reference point $p$
+  # $$I^{\text{world}}_i = R^{I}_i\,\operatorname{diag}(I^{\text{local}}_i)\,(R^{I}_i)^{\top}$$
+  # $$\mathcal{I}^{\text{world}}_i\big|_{\tilde{x}_i} = T_i^{\top}\,\mathcal{I}^{\text{world}}_i\,T_i,\qquad T_i := \begin{bmatrix} I & 0 \\ -[\,x^{I}_i - \tilde{x}_i\,]_\times & I \end{bmatrix}$$
+ 
+  # cinert packs the resulting 6$\times$6 (top-left $I^{\text{world}}_i + m_i [d]_\times [d]_\times^{\top}$, top-right $m_i\,d$, bottom mass) as vec10. $d = x^{I}_i - \tilde{x}_i$.
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -745,19 +749,11 @@ def com_pos(m: Model, d: Data):
     outputs=[d.cinert],
   )
 
-  # Spatial motion subspace S_k of dof k. Rigorous (Lie-algebra) definition: take the world-frame
-  # left-trivialization of the body-pose Jacobian w.r.t. q_k -- this yields a spatial twist
-  # referenced at the world origin:
-
-  #   $$\widetilde{S}_k(q) \,:=\, \operatorname{vee}\!\Bigl(\tfrac{\partial T_b^{\,w}}{\partial q_k}\,(T_b^{\,w})^{-1}\Bigr) \,=\, \begin{bmatrix}\hat\omega_k \\ v_k^{(0)}\end{bmatrix} \,\in\,\mathfrak{se}(3)$$
- 
-  # MuJoCo references the linear part at subtree CoM $\bar{x}_{\text{root}(b(k))}$ instead of the world
-  # origin. Linear parts transform as $v|_p \,=\, v|_0 + \omega\times p$, so:
- 
-  #   $$S_k\big|_{\bar{x}_{\text{root}(b(k))}} \,=\, \begin{bmatrix}\hat\omega_k \\ v_k^{(0)} + \hat\omega_k \times \bar{x}_{\text{root}(b(k))}\end{bmatrix} \,=\, \begin{bmatrix}\hat\omega_k \\ \hat\omega_k \times (\bar{x}_{\text{root}(b(k))} - a_k) + \hat v_k\end{bmatrix}$$
- 
-  # where $a_k\!=\!d.xanchor_{\text{jnt}(k)}$, $\hat\omega_k,\hat v_k$ are joint-axis rotation/translation parts from $d.xaxis$
-  # (rotation-only dofs have $\hat v_k\!=\!0$; translation-only dofs have $\hat\omega_k\!=\!0$ and the linear part is just $\hat v_k$).
+  
+  # $$S_k \,=\, \begin{bmatrix}\bar{\omega}^{\text{world}}_k \\ v_k^{(0)} + \bar{\omega}^{\text{world}}_k \times \tilde{x}_{r(k)}\end{bmatrix} \,=\, \begin{bmatrix}\bar{\omega}^{\text{world}}_k \\ \bar{\omega}^{\text{world}}_k \times (\tilde{x}_{r(k)} - a_k) + \bar{v}^{\text{world}}_k\end{bmatrix}$$
+  
+  # where $a_k\!=\!d.xanchor_{\text{jnt}(k)}$, and $\bar{\omega}^{\text{world}}_k,\bar{v}^{\text{world}}_k$ are joint-axis rotation/translation parts from $d.xaxis$
+  # (rotation-only dofs have $\bar{v}^{\text{world}}_k\!=\!0$; translation-only dofs have $\bar{\omega}^{\text{world}}_k\!=\!0$ and the linear part is just $\bar{v}^{\text{world}}_k$).
   wp.launch(
     _cdof,
     dim=(d.nworld, m.njnt),
@@ -1024,22 +1020,22 @@ def crb(m: Model, d: Data):
   """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
   Phase 1 (post-order tree reduction): accumulates each body's spatial inertia
-  $\mathcal{I}_i\big|_{\bar{x}_{\text{root}(i)}}$ (world basis, subtree-CoM-referenced; from com_pos)
-  over its entire subtree, producing the composite rigid body inertia
-  $\mathcal{I}_{c,i}\big|_{\bar{x}_{\text{root}(i)}}$. All bodies in the same chain share the same
-  reference point, so vec10 entries add directly.
+  $\mathcal{I}^{\text{world}}_i\big|_{\tilde{x}_i}$ (world basis, subtree-CoM-referenced; from com_pos)
+  over its entire subtree, producing the composite rigid body inertia $\mathcal{I}^{\text{sub}}_i$.
+  All bodies in the same chain share the same reference point $\tilde{x}_i$, so vec10 entries add directly.
 
   Phase 2 (per-dof assembly): builds the joint-space inertia matrix $M(q)$ entry by entry using
-  $M_{ij} = S_i^{\top}\big|_{\bar{x}}\;\mathcal{I}_{c,\text{lower}(i,j)}\big|_{\bar{x}}\;S_j\big|_{\bar{x}} + \delta_{ij} a_i$,
-  where $S_k\big|_{\bar{x}}$ is dof $k$'s motion subspace at subtree CoM (from cdof) and "lower"
-  is the deeper of body($i$), body($j$) in the kinematic tree. $M_{ij} = 0$ if $i,j$ have no
-  ancestor-descendant relationship. Storage is sparse (lower triangle packed by ancestor) or dense.
+  $M_{ij} = S_i^{\top}\, \mathcal{I}^{\text{sub}}_{\text{lower}(i,j)}\, S_j + \delta_{ij}\, a_i$,
+  where $S_k$ is dof $k$'s motion subspace at subtree CoM (from cdof) and "lower" is the deeper
+  of body($i$), body($j$) in the kinematic tree. $M_{ij} = 0$ if $i,j$ have no ancestor-descendant
+  relationship. See docs/inertia.md for the full derivation. Storage is sparse (lower triangle
+  packed by ancestor) or dense.
   """
   # Phase 1 -- post-order reduce up the kinematic tree (deepest level $\to$ root, same body-tree pattern as com_pos).
-  # The wp.copy seeds each body with its own $\mathcal{I}_i\big|_{\bar{x}_{\text{root}(i)}}$ (= $d.cinert$, the $j=i$ term);
+  # The wp.copy seeds each body with its own $\mathcal{I}^{\text{world}}_i\big|_{\tilde{x}_i}$ (= $d.cinert$, the $j=i$ term);
   # the loop adds all descendants. Net result, in closed form:
-  # $$\mathcal{I}_{c,i}\big|_{\bar{x}_{\text{root}(i)}} \,=\, \sum_{j\in\mathcal{S}(i)} \mathcal{I}_j\big|_{\bar{x}_{\text{root}(i)}},\qquad \mathcal{S}(i) = \{i\}\cup\text{descendants}(i)$$
-  # (all subtree members share the same reference point $\bar{x}_{\text{root}(i)}$, so per-vec10 atomic_add into the parent is well-defined.)  
+  # $$\mathcal{I}^{\text{sub}}_i \,=\, \sum_{j\in\mathcal{S}(i)} \mathcal{I}^{\text{world}}_j\big|_{\tilde{x}_j},\qquad \mathcal{S}(i) = \{i\}\cup\text{descendants}(i)$$
+  # (all subtree members share the same reference point $\tilde{x}_i$, so per-vec10 atomic_add into the parent is well-defined.)
   wp.copy(d.crb, d.cinert)
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
@@ -1049,9 +1045,8 @@ def crb(m: Model, d: Data):
   d.qM.zero_()
   if m.is_sparse:
     # Sparse: only $j\in\text{ancestors}(i)\cup\{i\}$ have nonzero $M_{ij}$ (tree structure $\Rightarrow$ ancestor-only coupling).
-    # Per-row packed in $d.dof\_Madr$. $S_i, S_j$ and $\mathcal{I}_{c,i}$ all referenced at $\bar{x} = \bar{x}_{\text{root}(b(i))}$:
-    # $$M_{ij} \,=\, S_i^{\top}\big|_{\bar{x}}\;\mathcal{I}_{c,i}\big|_{\bar{x}}\;S_j\big|_{\bar{x}} \,+\, \delta_{ij}\, a_i,\qquad j \in \text{ancestors}(i)\cup\{i\}$$
-    
+    # Per-row packed in $d.dof\_Madr$. $S_i, S_j, \mathcal{I}^{\text{sub}}_i$ all share reference $\tilde{x}_{b(i)}$:
+    # $$M_{ij} \,=\, S_i^{\top}\, \mathcal{I}^{\text{sub}}_i\, S_j \,+\, \delta_{ij}\, a_i,\qquad j \in \text{ancestors}(i)\cup\{i\}$$
     # ($a_i$ = $m.dof\_armature_i$, reflected motor-rotor inertia on the diagonal.)
     wp.launch(
       _qM_sparse,
@@ -1060,9 +1055,9 @@ def crb(m: Model, d: Data):
       outputs=[d.qM],
     )
   else:
-    # Dense: same formula, but stored as full $n_v \times n_v$. Both triangles filled (matrix is symmetric).
-    # $$M_{ij} \,=\, S_i^{\top}\big|_{\bar{x}}\;\mathcal{I}_{c,\text{lower}(i,j)}\big|_{\bar{x}}\;S_j\big|_{\bar{x}} \,+\, \delta_{ij}\, a_i,\qquad \bar{x} = \bar{x}_{\text{root}(b(i))}$$
-    # (uses $\mathcal{I}_{c,i}$ for the inner $i$-loop because thread $i$ walks its ancestors $j\le i$ and $\text{lower}(i,j)=i$.)
+    # Dense: same formula, full $n_v \times n_v$ storage. Both triangles filled (matrix is symmetric).
+    # $$M_{ij} \,=\, S_i^{\top}\, \mathcal{I}^{\text{sub}}_{\text{lower}(i,j)}\, S_j \,+\, \delta_{ij}\, a_i$$
+    # (thread $i$ walks its ancestors $j\le i$, so $\text{lower}(i,j)=i$ and the kernel uses $\mathcal{I}^{\text{sub}}_i$ directly.)
     wp.launch(
       _qM_dense, dim=(d.nworld, m.nv), inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, d.cdof, d.crb], outputs=[d.qM]
     )

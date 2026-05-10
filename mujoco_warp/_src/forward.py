@@ -519,25 +519,28 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
-  # $$T_i^{w}(q) = T_{p(i)}^{w}\;T_i^{\text{joint}}(q),\qquad \forall\, i\in\text{bodies}$$
+  # $$G_i(q) = G_{p(i)}(q)\,G^{\text{joint}}_i(q_i),\quad G_i(q) := \begin{bmatrix} R_i & x_i \\ 0 & 1 \end{bmatrix}\in SE(3),\qquad \forall\, i\in\text{bodies}$$
+  
   smooth.kinematics(m, d)
 
-  # $$\bar{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x_j}{\sum_{j\in\mathcal{S}(i)} m_j},\quad \bar{I}_i = \sum_{j\in\mathcal{S}(i)} I_j^{\text{CoM}}$$
+  # $$\tilde{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x^{I}_j}{\sum_{j\in\mathcal{S}(i)} m_j},\qquad \mathcal{I}^{\text{world}}_j\big|_{\tilde{x}_j}\;\text{(per-body 6}\times\text{6 spatial inertia at subtree CoM)}$$
+  
   smooth.com_pos(m, d)
 
-  # $$x_c^{w} = T_{\text{body}(c)}^{w}\, p_c^{\text{local}}\quad\text{(cameras and lights inherit body transforms)}$$
+  # $$x_c = x_{b(c)} + R_{b(c)}\, p^{\text{local}}_c,\qquad R_c = R_{b(c)}\, R^{\text{local}}_c\quad\text{(cameras and lights inherit body transforms)}$$
   smooth.camlight(m, d)
 
-  # $$v_k^{w} = T_{\text{body}(k)}^{w}\, v_k^{\text{rest}}\quad\text{(deformable mesh vertices)}$$
+  # $$v_k = x_{b(k)} + R_{b(k)}\, v^{\text{rest}}_k\quad\text{(deformable mesh vertices)}$$
   smooth.flex(m, d)
 
   # $$L_t(q)=\sum_{k}\lVert p_{k+1}-p_{k}\rVert,\qquad J_t=\frac{\partial L_t}{\partial q}$$
   smooth.tendon(m, d)
 
-  # $$M(q)\;\in\;\mathbb{R}^{n_v\times n_v}\quad\text{via the Composite Rigid Body algorithm}$$
+  # $$M(q) = \sum_{b} J^{I,\text{world}\,\top}_b\,\mathcal{I}^{\text{world}}_b\, J^{I,\text{world}}_b \;\in\; \mathbb{R}^{n_v\times n_v}\quad\text{(Composite Rigid Body algorithm; see docs/inertia.md)}$$
+  
   smooth.crb(m, d)
 
-  # $$M(q)\;\mathrel{+}=\;J_t^{\top}\, A_t\, J_t\qquad\text{(reflected tendon armature)}$$
+  # $$M(q) \leftarrow M(q) + J_t^{\top}\, A_t\, J_t\qquad\text{(reflected tendon armature added in place)}$$
   smooth.tendon_armature(m, d)
 
   if factorize:
@@ -548,12 +551,12 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     # $$\mathcal{C}=\bigl\{(p_k,\,n_k,\,\phi_k,\,\mu_k)\bigr\}_{k=1}^{n_{\text{con}}}\qquad\text{broadphase}\to\text{narrowphase}$$
     collision_driver.collision(m, d)
 
-  # $$J(q)\in\mathbb{R}^{n_{\text{efc}}\times n_v},\quad a_{\text{ref}},\;R\qquad\text{(constraint Jacobian \& reference)}$$
+  # $$J(q)\in\mathbb{R}^{n_{\text{efc}}\times n_v},\quad a_{\text{ref}},\;\mathbf{R}_{\text{efc}}\qquad\text{(constraint Jacobian, reference acc, regularization)}$$
   constraint.make_constraint(m, d)
 
   # TODO(team): remove False after island features are more complete
   if False and not (m.opt.disableflags & DisableBit.ISLAND):
-    # $$\text{efc-graph}\;\longrightarrow\;\mathcal{I}_1\sqcup\mathcal{I}_2\sqcup\cdots\sqcup\mathcal{I}_K\quad\text{(disjoint constraint islands)}$$
+    # $$\text{efc-graph}\;\longrightarrow\;\mathcal{P}_1\sqcup\mathcal{P}_2\sqcup\cdots\sqcup\mathcal{P}_K\quad\text{(disjoint constraint islands; }\mathcal{P}\text{ to avoid clash with spatial inertia }\mathcal{I}\text{)}$$
     island.island(m, d)
 
   # $$\ell_u(q),\qquad \frac{\partial \ell_u}{\partial q}\quad\text{(actuator length and moment arm)}$$

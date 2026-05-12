@@ -534,6 +534,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.flex(m, d)
 
   # $$L_t(q)=\sum_{k}\lVert p_{k+1}-p_{k}\rVert,\qquad J_t=\frac{\partial L_t}{\partial q}$$
+  
   smooth.tendon(m, d)
 
   # $$M(q) = \sum_{b} J^{I,\text{world}\,\top}_b\,\mathcal{I}^{\text{world}}_b\, J^{I,\text{world}}_b \;\in\; \mathbb{R}^{n_v\times n_v}\quad\text{(Composite Rigid Body algorithm; see docs/inertia.md)}$$

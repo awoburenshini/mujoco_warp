@@ -666,7 +666,9 @@ def _cdof(
   cdof_out: wp.array2d[wp.spatial_vector],
 ):
   # Each branch fills the spatial motion subspace at subtree-CoM reference (matches docs/inertia.md eq for $S_k$):
+  
   # $$S_k = \begin{bmatrix}\bar{\omega}^{\text{world}}_k \\ \bar{\omega}^{\text{world}}_k \times (\tilde{x}_{r(k)} - a_k) + \bar{v}^{\text{world}}_k\end{bmatrix}$$
+  
   # by specializing $(\bar{\omega}^{\text{world}}_k,\,\bar{v}^{\text{world}}_k)$ per joint type. See com_pos() for the SE(3) derivation.
   worldid, jntid = wp.tid()
   bodyid = jnt_bodyid[jntid]

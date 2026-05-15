@@ -318,3 +318,131 @@ $$
 
 This is a second-order cone constraint in the contact force variables.
 
+## Optimization problem
+
+$$
+\phi(\ddot q) \;=\; \underbrace{\tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M(q^t)\,(\ddot q - \ddot q_{\text{smooth}})}_{\text{Gauss term}} \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(\underbrace{J_c\ddot q - a^{\text{ref}}_c}_{=:\,a_c}\big),
+$$
+
+The per-contact penalty $s_{\mathcal{K}_c}$ has three forms of increasing generality: frictionless, isotropic Coulomb, anisotropic. Each case adds one more piece of geometry on top of the previous.
+
+Common notation across all three cases:
+
+1) Per-row split of the residual:
+$$
+a_c \;=\; (a_n,\; a_t^{1},\; a_t^{2})_{[0:\text{condim}_c]}, \qquad a_n \in \mathbb R,\;\; a_t \in \mathbb R^{\text{condim}_c - 1}.
+$$
+
+2) Per-row regularization (from $(\texttt{solref}, \texttt{solimp})$, stored at `d.efc.D[i]`):
+$$
+D_i \;=\; \text{row }i\text{'s }D, \qquad D_n \;:=\; D_{i_n(c)} \quad\text{($i_n(c)$ = normal row of contact $c$)}.
+$$
+
+3) Physical Coulomb friction (cone constraint $\|\lambda_t\|\leq\mu_s\lambda_n$):
+$$
+\mu_s \;=\; \texttt{friction[0]}.
+$$
+
+---
+
+### Case 1 — Frictionless ($\mu_s = 0$)
+
+In MJWarp this is $\text{condim}_c = 1$: only the normal row exists, $a_c = (a_n)$, and the constraint set is the half-space $\mathcal{H} = \{a_n \geq 0\}$. The soft penalty is the Moreau envelope of $\delta_\mathcal{H}$:
+
+$$
+\boxed{\;
+s_{\mathcal{K}_c}(a_n)
+\;=\; \tfrac12\, D_n\, \min(a_n,\, 0)^{2}
+\;=\; \begin{cases} 0 & a_n \geq 0 \\[4pt] \tfrac12\, D_n\, a_n^{2} & a_n < 0 \end{cases}
+\;}
+$$
+
+Geometry: $\mathcal{H}$ is flat (no apex), so projection has only **two** regions — inside ($a_n \geq 0$, dist $= 0$) and outside ($a_n < 0$, dist $= |a_n|$).
+
+Contact force:
+$$
+\lambda_n \;=\; -\,D_n\, \min(a_n,\, 0) \;=\; D_n\, \max(0,\, -a_n) \;\geq\; 0.
+$$
+
+In MJWarp the kernel uses the generic "limit / frictionless / pyramidal" branch ([solver.py:1871-1879](../mujoco_warp/_src/solver.py#L1871-L1879)), not the elliptic-cone block.
+
+---
+
+### Case 2 — Isotropic Coulomb friction ($\mu_s > 0$, all tangent scales $= \mu_s$, $\texttt{impratio} = 1$)
+
+$\text{condim}_c \geq 3$. The constraint set in force space is the tipped second-order cone
+
+$$
+\mathcal{K} \;=\; \{(\lambda_n, \lambda_t) : \lambda_n \geq 0,\; \|\lambda_t\|_2 \leq \mu_s \lambda_n\}.
+$$
+
+The cone has an apex at the origin, so projection onto $\mathcal{K}$ splits the $(a_n, \|a_t\|_2)$-plane into **three** regions (Top = inside, Middle = nearest point on slant surface, Deep = apex):
+
+$$
+\boxed{\;
+s_{\mathcal{K}_c}(a_c) \;=\; \begin{cases}
+    0 & a_n \geq \mu_s\,\|a_t\|_2 \\[4pt]
+    \dfrac{D_c}{2(1+\mu_s^{2})}\,\big(a_n - \mu_s\,\|a_t\|_2\big)^{2} & \text{otherwise} \\[4pt]
+    \dfrac{D_c}{2}\,\big(a_n^{2} + \|a_t\|_2^{2}\big) \;=\; \dfrac{D_c}{2}\,\|a_c\|_2^{2} & \mu_s\, a_n + \|a_t\|_2 \leq 0
+\end{cases}
+\;}
+$$
+
+**Per-row $D$ in Case 2.** The 3 rows $i \in \{n, t_1, t_2\}$ of one contact share the same `solref/solimp` and (under impratio = 1, isotropic friction) the same invweight, so by [`_efc_row`](../mujoco_warp/_src/constraint.py#L113)
+
+$$
+D_n = D_{t,1} = D_{t,2} \;=:\; D_c \;=\; \frac{\text{imp}}{\text{invweight}\,(1-\text{imp})} \;>\; 0,
+$$
+
+where $\text{invweight} \approx (JM^{-1}J^{\top})_{ii}|_{q_{\text{ref}}}$ is the inverse effective mass at the contact and $\text{imp} \in [\text{dmin}, \text{dmax}]$ is the impedance from `solimp`. So Deep's $\sum_{i \in c} D_i a_i^2$ collapses to a single $D_c \|a_c\|_2^2$ (one regularization constant times the squared Euclidean norm — that's just "distance² from $a_c$ to the apex").
+
+Top and Deep are dual cones with reciprocal slopes ($\mu_s$ vs $1/\mu_s$); $(a_n - \mu_s\|a_t\|_2)/\sqrt{1+\mu_s^2}$ is the signed Euclidean distance to the slant surface, squared and weighted gives Middle.
+
+Force per zone:
+
+| Zone | $\lambda_n$ | $\lambda_t$ |
+|---|---|---|
+| Top | $0$ | $0$ |
+| Middle | $\dfrac{D_c}{1+\mu_s^{2}}\big(\mu_s\|a_t\|_2 - a_n\big) > 0$ | $\|\lambda_t\| = \mu_s\lambda_n$ (classic stick/slip) |
+| Deep | $-D_c\, a_n$ | $-D_c\, a_t^{j}$ (no cone coupling) |
+
+Taking $\mu_s \to 0$ collapses the cone to a half-space, Middle and Deep merge into $\tfrac12 D_c a_n^2$, recovering Case 1.
+
+---
+
+### Case 3 — Anisotropic friction (general)
+
+Two extras over Case 2:
+
+4) Per-tangent scales (different friction in each tangent direction):
+$$
+\mu_{t,j} \;:=\; \texttt{friction}[j-1], \qquad j = 1, \dots, \text{condim}_c - 1.
+$$
+
+5) Impedance-ratio rescaling (user-set normal/tangent stiffness ratio):
+$$
+\mu_c \;:=\; \mu_s\,/\,\sqrt{\texttt{impratio}}, \qquad \texttt{impratio} = 1 \;\Longrightarrow\; \mu_c = \mu_s.
+$$
+
+6) Anisotropy-weighted tangent norm replaces the ordinary 2-norm:
+$$
+\|a_t\|_\mu \;:=\; \sqrt{\,\sum_j (\mu_{t,j}/\mu_s)^{2}\,(a_t^{j})^{2}\,}, \qquad \mu_{t,j} \equiv \mu_s \;\Longrightarrow\; \|a_t\|_\mu = \|a_t\|_2.
+$$
+
+The three-zone formula is **structurally identical** to Case 2 — just replace $\|a_t\|_2$ by $\|a_t\|_\mu$ and the normalizing $\mu_s^2$ by $\mu_c^2$:
+
+$$
+\boxed{\;
+s_{\mathcal{K}_c}(a_c) \;=\; \begin{cases}
+    0 & a_n \geq \mu_s\,\|a_t\|_\mu \quad\text{(Top)} \\[4pt]
+    \dfrac{D_n}{2(1+\mu_c^{2})}\,\big(a_n - \mu_s\,\|a_t\|_\mu\big)^{2} & \text{otherwise (Middle)} \\[4pt]
+    \tfrac12 \sum_{i \in c} D_i\, a_i^{2} & \mu_c^{2}\,a_n + \mu_s\,\|a_t\|_\mu \leq 0 \quad\text{(Deep)}
+\end{cases}
+\;}
+$$
+
+This matches the kernel implementation ([solver.py:1880-1937](../mujoco_warp/_src/solver.py#L1880-L1937)), which computes $N = \mu_c a_n$, $u_j = \mu_{t,j} a_t^j$, $T = \|u\|_2$ as scaled intermediates and uses $N \geq \mu_c T$, $\mu_c N + T \leq 0$ as zone tests — those are exactly the boxed conditions above after substituting $T = \mu_s \|a_t\|_\mu$.
+
+Setting $\mu_{t,j} \equiv \mu_s$ and $\texttt{impratio} = 1$ recovers Case 2; further setting $\mu_s = 0$ recovers Case 1.
+
+

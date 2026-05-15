@@ -1026,7 +1026,7 @@ def forward(m: Model, d: Data):
   # $$\tau_{\text{smooth}} = \tau_{\text{passive}} + \tau_{\text{actuator}} + \tau_{\text{applied}} - C(q,\dot q),\qquad \ddot q_{\text{smooth}} = M^{-1}\,\tau_{\text{smooth}}\quad\text{(unconstrained acceleration via }LDL^{\top}\text{)}$$
   fwd_acceleration(m, d, factorize=True)
 
-  # $$\ddot q^{*} = \arg\min_{\ddot q}\;\tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}})\quad\text{s.t. } J\ddot q \succeq a_{\text{ref}}\quad\text{(constraint projection)}$$
+  # $$\ddot q^{*} \;=\; \arg\min_{\ddot q}\; \tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}}) \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(J_c\ddot q - a^{\text{ref}}_c;\, D_c,\, \mu_c\big)\quad\text{(unconstrained Newton-CG on a Moreau envelope of the friction cone }\mathcal{K}_c=\{\|\lambda_t\|\leq\mu_c\lambda_n,\ \lambda_n\geq 0\}\text{; }s_{\mathcal{K}_c}\text{ is }C^1\text{ piecewise: }0\text{ inside cone, }\tfrac{D_n}{2(1+\mu_c^2)}(a_n-\|\mu_t a_t\|)^2\text{ near boundary, }\tfrac12\sum_i D_i a_i^2\text{ in polar cone)}$$
   solver.solve(m, d)
   # $$y^{\text{acc}} = h^{\text{acc}}(q,\dot q,\ddot q,\,f^{\text{contact}})\quad\text{(force/torque/accelerometer/contact-force sensors)}$$
   sensor.sensor_acc(m, d)

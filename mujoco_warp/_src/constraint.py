@@ -1993,19 +1993,49 @@ def _contact_elliptic(
   # Out:
   efc_nnz_out: wp.array[int],
 ):
+  r"""Build one row of $J^c$ per (contact $c$, axis $a$) for elliptic-cone contacts.
+
+  Each thread emits row $a$ of contact $c$ in the efc system:
+  $$ J^c_{c,a} = F_{c,a}^\top\,\big(J^{p_c}_{b_2} - J^{p_c}_{b_1}\big), \quad a \in \{0,\ldots,\text{condim}_c-1\}. $$
+  Row $a=0$ is the unilateral normal ($\lambda_n \geq 0$); rows $a=1,\ldots,\text{condim}-1$ are
+  tangents/torsion/rolling, bilateral but bounded by the Coulomb cone $\|\lambda_t\| \leq \mu_s \lambda_n$
+  (enforced later by the solver, not at row-assembly time).
+
+  *** Reading guide (condim ≤ 3 is the >95% case) ***
+  This kernel supports condim ∈ {1, 3, 4, 6}. Sites marked **[TORSION/ROLLING — skip for condim ≤ 3]**
+  handle the angular axes ($a \in \{3,4,5\}$) and are usually irrelevant in practice (multi-point
+  contact + condim=3 recovers the same physics geometrically, see [contact.md](../../contact.md)).
+  When reading for condim=3, only $a \in \{0,1,2\}$ (linear, $\dot p$-based) matters.
+
+  Launch grid: `(naconmax, condim_max)`. See [contact.md](../../contact.md) §3 for the derivation.
+
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  KERNEL OUTLINE — this kernel produces 3 things per (contact, axis):     ║
+  ║    ①  ASSEMBLE J^c ROW                → efc_J[row, :]                    ║
+  ║    ②  PRECONDITIONER (invweight)      → efc_D    (via _efc_row + solimp) ║
+  ║    ③  REFERENCE ACCELERATION + TYPE   → efc_aref, efc_type (via _efc_row)║
+  ║  + setup (thread filter, slot atomic-alloc, body resolution, frame load).║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+  """
+  # Thread $(c, a)$ writes row $a$ of contact $c$.
   conid, dimid = wp.tid()
 
   if conid >= nacon_in[0]:
     return
 
+  # Only ContactType.CONSTRAINT contacts emit efc rows (collision-sensor or SDF contacts don't).
   if not type_in[conid] & ContactType.CONSTRAINT:
     return
 
   condim = condim_in[conid]
 
+  # Threads with $a \geq \text{condim}_c$ early-exit (launch grid is sized to max condim = 6;
+  # threads $a \in \{3,4,5\}$ exist for condim ≥ 4 only — **[TORSION/ROLLING — skip for condim ≤ 3]**).
   if dimid > condim - 1:
     return
 
+  # Softened gap $\widetilde g_c := g_c - \text{includemargin}$ (see contact.md §2).
+  # Active iff $\widetilde g_c < 0$ (penetrating or inside margin).
   includemargin = includemargin_in[conid]
   pos = dist_in[conid] - includemargin
   active = pos < 0.0
@@ -2013,15 +2043,25 @@ def _contact_elliptic(
   if active:
     worldid = worldid_in[conid]
 
+    # Atomically claim one row slot in the efc arrays for this (contact, axis).
     efcid = wp.atomic_add(nefc_out, worldid, 1)
     if efcid >= njmax_in:
       contact_efc_address_out[conid, dimid] = -1
       return
 
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+    # Per-world scalar lookup with broadcast trick:
+    #   shape (1,)        → all worlds share the same value (worldid % 1 == 0).
+    #   shape (nworld,)   → each world has its own value (worldid % nworld == worldid).
+    # Used throughout mujoco_warp so kernels work uniformly for "shared" or "per-world" params.
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]                      # integrator $\Delta t$
+    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]  # $1/\sqrt{\text{impratio}}$ (friction-cone scaling, see contact tangent block below)
+
+    # Reverse index: tells downstream code (sensors, solver, contact-force reporters) which efc
+    # row holds this (contact, axis). Read as `efc_row = contact_efc_address[c, a]`; combined with
+    # `d.efc.force[efc_row]` recovers $\lambda_{c,a}$ for that direction.
     contact_efc_address_out[conid, dimid] = efcid
 
+    # Resolve $b_1, b_2$: bodies that the two contacting geoms (or flex verts) attach to.
     geom = geom_in[conid]
 
     if geom[0] >= 0:
@@ -2038,26 +2078,39 @@ def _contact_elliptic(
       vert = vert_in[conid]
       body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
+    # $p_c$ = contact point (world frame); $F_c$ = $3\times 3$ frame with rows $[n;\,t_1;\,t_2]$.
     con_pos = pos_in[conid]
     frame = frame_in[conid]
 
     Jqvel = float(0.0)
 
-    # skip fixed bodies
+    # Collapse welded bodies to their representative; welded chains share dofs.
     body1 = body_weldid[body1]
     body2 = body_weldid[body2]
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ①  ASSEMBLE J^c ROW                                       (heavy lift)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Walk the dof tree (symmetric difference of ancestors of $b_1, b_2$);
+    # per contributing dof $k$: jac_dof → $J^{p_c}_{b,k}$ → frame projection
+    # → write to efc_J. Also accumulate Jqvel = $J^c \dot q$ for use in ③.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Walk both bodies' dof chains from leaf to root over the symmetric difference
+    # $\text{ancestors}(b_1)\,\triangle\,\text{ancestors}(b_2)$. Common ancestors cancel in
+    # $J^{p_c}_{b_2,k} - J^{p_c}_{b_1,k}$ (they move both bodies identically), so iterating
+    # only on the symmetric difference both saves work and is what gives $J^c$ its sparsity.
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
-      # count non-zeros
+      # First pass: count `rownnz` = #contributing dofs, then atomic-allocate a slice in efc_J.
       pda1 = da1
       pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
-        # skip common dofs
+        # Reached common ancestor → rest of the chain cancels, stop counting.
         if pda1 == da and pda2 == da:
           break
         if pda1 == da:
@@ -2066,7 +2119,7 @@ def _contact_elliptic(
           pda2 = dof_parentid[pda2]
         rownnz += 1
 
-      # get rowadr
+      # Atomically reserve `rownnz` slots in the packed sparse J buffer.
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
       if rowadr + rownnz > njmax_nnz_in:
         return
@@ -2081,6 +2134,11 @@ def _contact_elliptic(
     else:
       dofid = int(nv - 1)
 
+    # For each contributing dof $k$ (= dofid), compute the contact-frame row entry
+    # $$ J^c_{c,a,k} = F_{c,a}^\top\,(J^{p_c}_{b_2,k} - J^{p_c}_{b_1,k}). $$
+    # `support.jac_dof` evaluates $J^{p_c}_{b,k} = T^{p_c}_b\,S_k$ on the fly (see contact.md §3b):
+    #   jacp = $\bar\omega_k \times (p_c - a_k) + \bar v_k$     (linear part — used for axes 0,1,2)
+    #   jacr = $\bar\omega_k$  (angular part — **[TORSION/ROLLING — only used for axes 3,4,5; ignore for condim ≤ 3]**)
     while True:
       if is_sparse:
         if nnz >= rownnz:
@@ -2090,7 +2148,16 @@ def _contact_elliptic(
           break
 
       if dofid == da:
-        # TODO(team): contact jacobian
+        # Per-dof spatial Jacobian columns at the contact point $p_c$.
+        # `support.jac_dof` returns the (linear, angular) parts of $J^{p_c}_{b,k}$:
+        #   jacp $= \bar\omega_k \times (p_c - a_k) + \bar v_k \in \mathbb{R}^3$  (linear velocity at $p_c$)
+        #   jacr $= \bar\omega_k \in \mathbb{R}^3$                                (angular velocity of body $b$)
+        # If $k \notin \text{ancestors}(b)$, `jac_dof` short-circuits and returns $(0, 0)$.
+        # TODO(team): contact jacobian — fuse the two calls; skip the redundant
+        # in-tree walk inside `jac_dof` (the outer loop already knows which body
+        # owns this dof via $da_1, da_2$).
+
+        # Body 1's column: $J^{p_c}_{b_1,k}$
         jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -2102,6 +2169,8 @@ def _contact_elliptic(
           dofid,
           worldid,
         )
+        # Body 2's column: $J^{p_c}_{b_2,k}$.
+        # The difference $J^{p_c}_{b_2,k} - J^{p_c}_{b_1,k}$ below is the relative-velocity Jacobian column.
         jac2p, jac2r = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -2114,12 +2183,17 @@ def _contact_elliptic(
           worldid,
         )
 
+        # Project $(J^{p_c}_{b_2,k} - J^{p_c}_{b_1,k})$ onto contact-frame axis dimid.
+        # dimid 0,1,2 → linear part (jac_p), axis = frame[dimid] = $[n, t_1, t_2]$.
+        # dimid 3,4,5 → angular part (jac_r), axis = frame[dimid-3] (torsion uses normal, rolling uses tangents).
+        # **The `else` branch is [TORSION/ROLLING — skip for condim ≤ 3]**; for condim=3 only the `if` branch executes.
         J = float(0.0)
         for xyz in range(3):
           if dimid < 3:
             jac_dif = jac2p[xyz] - jac1p[xyz]
             J += frame[dimid, xyz] * jac_dif
           else:
+            # [TORSION/ROLLING] — angular Jacobian contraction; condim ≥ 4 only.
             jac_dif = jac2r[xyz] - jac1r[xyz]
             J += frame[dimid - 3, xyz] * jac_dif
 
@@ -2130,11 +2204,12 @@ def _contact_elliptic(
           nnz += 1
         else:
           efc_J_out[worldid, efcid, dofid] = J
+        # Accumulate $\dot{\widetilde g}^{(a)} = J^c_{c,a}\,\dot q$ (used as $\dot g$ in $a^{\text{ref}}$).
         Jqvel += J * qvel_in[worldid, dofid]
         if is_sparse and nnz >= rownnz:
           break
 
-        # Advance tree pointers and recompute da for next iteration
+        # Advance whichever frontier matched `da` to its dof-tree parent, then recompute frontier.
         if da1 == da:
           da1 = dof_parentid[da1]
         if da2 == da:
@@ -2146,38 +2221,75 @@ def _contact_elliptic(
           dofid -= 1
       else:
         if not is_sparse:
+          # Dense mode: explicitly zero this column (not in the symmetric difference).
           efc_J_out[worldid, efcid, dofid] = 0.0
           dofid -= 1
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ②  PRECONDITIONER  (invweight → D in _efc_row)
+    # ═══════════════════════════════════════════════════════════════════════
+    # $\text{invweight} \;\approx\; \big(J\,M^{-1}\,J^\top\big)_{ii}\big|_{q_{\text{ref}}}$
+    # — rest-pose, body-CoM, direction-averaged, cross-body-decoupled; precomputed
+    # in `io.py` as `body_invweight0[b]`. `_efc_row` turns it into
+    # $D = 1 / (\text{invweight}\,(1{-}\text{imp})/\text{imp})$ = `d.efc.D`.
+    # ═══════════════════════════════════════════════════════════════════════
     body_invweight0_id = worldid % body_invweight0.shape[0]
     invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ③  REFERENCE ACCELERATION $a^{\text{ref}}$  +  TYPE TAG
+    # ═══════════════════════════════════════════════════════════════════════
+    # Baumgarte PD:  $a^{\text{ref}} \;=\; -K_p\, g_n \;-\; K_d\, J^c \dot q$
+    # `_efc_row` evaluates this using $K_p, K_d$ derived from solref and the
+    # impedance curve from solimp.
+    #   - normal  (dimid=0): position drive on $g_n$,        ref = solref
+    #   - tangent (dimid>0): no position drive ($g_n \to 0$), ref = solreffriction,
+    #                        plus impratio + anisotropic-friction rescaling of invweight.
+    # Type tag (`CONTACT_FRICTIONLESS` or `CONTACT_ELLIPTIC`) tells solver
+    # which barrier shape to use for this row.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Default (axis $a=0$, normal): Baumgarte target $a^{\text{ref}}_n$ uses $\widetilde g_c$ as
+    # the position drive; ref = solref = $(\tau, d)$ (see contact.md §2).
     ref = solref_in[conid]
     pos_aref = pos
 
     if dimid > 0:
+      # Tangent / torsion / rolling row. Optional separate `solreffriction` overrides solref.
       solreffriction = solreffriction_in[conid]
-
-      # non-normal directions use solreffriction (if non-zero)
       if solreffriction[0] or solreffriction[1]:
         ref = solreffriction
 
+      # Apply impratio: $1/\text{impratio}$ scales the friction row's invweight, stretching the
+      # elliptic cone so that friction is stiffer ($\text{impratio} > 1$) or softer relative to normal.
+      # impratio_invsqrt $= 1/\sqrt{\text{impratio}}$, squared gives $1/\text{impratio}$.
       invweight = invweight * impratio_invsqrt * impratio_invsqrt
       friction = friction_in[conid]
 
+      # Anisotropic friction rescaling: normalize axis $a$'s $\mu_a$ relative to $\mu_0$ so the
+      # cone in the rescaled coordinates is round. friction = $(\mu_1, \mu_2, \mu_\tau, \mu_{r,1}, \mu_{r,2})$.
+      # Net invweight contribution along axis $a$: scale by $(\mu_1 / \mu_a)^2$.
+      #   dimid=2: 2nd tangent, $\mu_a = $ friction[1] (slide anisotropy; usually $\mu_1 = \mu_2$ → no-op).
+      #   dimid=3: **[TORSION — skip for condim ≤ 3]**, $\mu_a = $ friction[2].
+      #   dimid=4,5: **[ROLLING — skip for condim ≤ 3]**, $\mu_a = $ friction[3 or 4].
       if dimid > 1:
         fri0 = friction[0]
         frii = friction[dimid - 1]
         fri = fri0 * fri0 / (frii * frii)
         invweight *= fri
 
+      # Friction rows have no position target ($a^{\text{ref}}_t = 0$): friction reacts to slip
+      # via the cone-bounded multiplier, not via Baumgarte drift correction. See contact.md §2.
       pos_aref = 0.0
 
+    # condim=1 → only a normal row, frictionless. Otherwise this is a true elliptic-cone row.
     if condim == 1:
       efc_type = ConstraintType.CONTACT_FRICTIONLESS
     else:
       efc_type = ConstraintType.CONTACT_ELLIPTIC
 
+    # Compute and store row metadata: $a^{\text{ref}}$ (from pos_aref, Jqvel, ref), $D$ (from solimp),
+    # type tag, etc. `_efc_row` is shared by all efc kernels.
     _efc_row(
       opt_disableflags,
       worldid,

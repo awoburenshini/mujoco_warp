@@ -3224,8 +3224,21 @@ def _solver_iteration(
   step_size_cost: wp.array2d[float],
   nsolving: wp.array[int],
 ):
+  r"""One outer iteration of the solver; runs once per `wp.capture_while` tick of `_solve`.
+
+  Default (Newton) path is annotated below. CG-specific bits are gated on `m.opt.solver`.
+
+  Five conceptual steps:
+    (1) line search + (2) step  →  `_linesearch`        (bundled; applies $\ddot q \leftarrow \ddot q + \alpha s$ inside)
+    (3) update                  →  `_update_constraint` + `_update_gradient[_incremental]` (Newton: builds $H$, Cholesky-solves $H M_g = \nabla\phi$; CG: $M_g = M^{-1}\nabla\phi$)
+    (4) direction update        →  `solve_search_update` (Newton: $s \leftarrow -M_g$; CG: $s \leftarrow -M_g + \beta s$ with $\beta$ from `solve_beta`)
+    (5) converge                →  `solve_done`
+  In CG, step (4) also reads $\nabla\phi^{\text{prev}}, M_g^{\text{prev}}$ that `solve_prev_grad_Mgrad` snapshots BEFORE step (3) overwrites them — that's why it sits between (2) and (3). Newton skips that snapshot since $-M_g$ doesn't depend on history.
+  """
+  # (1) + (2) line search and step: find $\alpha = \arg\min_\alpha \phi(\ddot q + \alpha s)$ and apply $\ddot q \leftarrow \ddot q + \alpha s$ (also updates `Jaref = J\ddot q - a^{\text{ref}}` along the way).
   _linesearch(m, d, ctx, step_size_cost)
 
+  # (4-prep, CG only) snapshot $\nabla\phi^{\text{prev}} \leftarrow \nabla\phi,\; M_g^{\text{prev}} \leftarrow M_g$ before (3) overwrites them — needed for the Polak-Ribière $\beta$ at (4). Newton path skips this: its Newton direction $-M_g$ doesn't depend on the previous gradient.
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_prev_grad_Mgrad,
@@ -3244,14 +3257,16 @@ def _solver_iteration(
     # Must complete before update_constraint_efc which atomically increments.
     ctx.changed_efc_count.zero_()
 
+  # (3a) recompute cost $\phi$, per-row $\lambda$ (`d.efc.force`), and gradient contributions at the new $\ddot q$; also reclassifies each row's active-set state (used for incremental Hessian below).
   _update_constraint(m, d, ctx, track_changes=incremental)
 
+  # (3b) Newton: factor $H = M + J_{\mathcal{A}}^{\top} D_{\mathcal{A}} J_{\mathcal{A}}$ and solve $H\,M_g = \nabla\phi$. Incremental variant only updates rows of $H$ whose active-set state changed since last iteration — cheaper, but unsafe for elliptic cone (state changes are not tracked there). CG path just uses $M_g = M^{-1}\nabla\phi$ (no Hessian factor).
   if incremental:
     _update_gradient_incremental(m, d, ctx)
   else:
     _update_gradient(m, d, ctx)
 
-  # polak-ribiere
+  # (4a, CG only) Polak-Ribière coefficient: $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$. Newton path leaves $\beta$ stale — `solve_search_update` ignores it for Newton.
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_beta,
@@ -3260,8 +3275,10 @@ def _solver_iteration(
       outputs=[ctx.beta],
     )
 
+  # (4b-prep) clear `search_dot` ($\|s\|^2$ accumulator) for non-converged worlds; `solve_search_update` will atomic-add into it.
   wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
 
+  # (4b) compose new search direction: Newton $s \leftarrow -M_g$; CG $s \leftarrow -M_g + \beta\, s$ (`solve` switches inside the kernel via `m.opt.solver`). Also recomputes $s\!\cdot\! s$.
   wp.launch(
     solve_search_update,
     dim=(d.nworld, m.nv),
@@ -3269,6 +3286,7 @@ def _solver_iteration(
     outputs=[ctx.search, ctx.search_dot],
   )
 
+  # (5) convergence test (per world): $\texttt{done} \leftarrow (\sqrt{\nabla\phi^{\top} M_g}/\bar{m} < \texttt{tol})$ or $|\phi - \phi^{\text{prev}}| < \texttt{tol}\cdot\bar{m}$ or $n_{\text{iter}} \geq \texttt{iterations}$; for each world that newly becomes done, decrement `nsolving`. When `nsolving = 0`, `wp.capture_while` exits.
   wp.launch(
     solve_done,
     dim=d.nworld,
@@ -3287,14 +3305,26 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
-  # initialize some efc arrays
+  r"""Build the per-iteration solver state at the current $\ddot q$.
+
+  Computes the constraint residual $J\ddot q - a^{\text{ref}}$, the inertia-times-acceleration
+  $M\ddot q$, the cost $\phi(\ddot q)$ and its gradient $\nabla\phi$, and (when `grad=True`)
+  the Newton search direction $M_g \approx H^{-1}\nabla\phi$ — everything `_solve` needs to
+  start its CG loop. Reused by inverse dynamics with `grad=False` (no Newton direction).
+
+  Args:
+    m: model.
+    d: data; reads $\ddot q$ from `d.qacc` and the constraint system $(J, a^{\text{ref}}, D)$
+      from `d.efc` (assembled by `constraint.make_constraint`).
+    ctx: solver context; receives `Jaref`, `cost`, `grad`, and (if requested) `Mgrad`.
+    grad: if True also factor $H$ and solve $H\,M_g = \nabla\phi$.
+  """
+  # $$\phi \leftarrow +\infty,\quad \text{done} \leftarrow \text{false},\quad s\!\cdot\! s \leftarrow 0,\quad n_{\text{iter}} \leftarrow 0\quad\text{(per-world solver state reset; }+\infty\text{ guarantees first iteration improves)}$$
   wp.launch(
     solve_init_efc,
     dim=(d.nworld),
     outputs=[d.solver_niter, ctx.search_dot, ctx.cost, ctx.done],
   )
-
-  # jaref = d.efc_J @ d.qacc - d.efc_aref
 
   # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
   # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
@@ -3309,6 +3339,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if threads_per_efc > 1:
     ctx.Jaref.zero_()
 
+  # $$\text{Jaref} = J\,\ddot q - a^{\text{ref}} \;\in\; \mathbb{R}^{n_{\text{efc}}}\quad\text{(per-row constraint residual; sign convention: }\text{Jaref}_i < 0\text{ violates unilateral }J_i\ddot q \succeq a^{\text{ref}}_i\text{)}$$
   wp.launch(
     solve_init_jaref(m.is_sparse, m.nv, dofs_per_thread),
     dim=(d.nworld, d.njmax, threads_per_efc),
@@ -3316,12 +3347,14 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     outputs=[ctx.Jaref],
   )
 
-  # Ma = qM @ qacc
+  # $$Ma = M(q)\,\ddot q\quad\text{(reused by cost }\tfrac12 \ddot q^{\top} M\ddot q\text{ and by gradient }M(\ddot q - \ddot q_{\text{smooth}})\text{; sparse }L D L^{\top}\text{ or dense tiled mat-vec)}$$
   support.mul_m(m, d, d.efc.Ma, d.qacc, skip=ctx.done)
 
+  # $$\phi(\ddot q) \;=\; \tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}}) \;+\; \tfrac12 \sum_{i\in\mathcal{A}} D_i\,\min\!\big(J_i\ddot q - a^{\text{ref}}_i,\,0\big)^2,\qquad \nabla\phi \;=\; M(\ddot q - \ddot q_{\text{smooth}}) \;+\; J_{\mathcal{A}}^{\top}\,\operatorname{diag}(D_{\mathcal{A}})\,\text{Jaref}_{\mathcal{A}}\quad\text{(active set }\mathcal{A}=\{i:\text{Jaref}_i < 0\text{ for unilateral, all }i\text{ for equality})$$
   _update_constraint(m, d, ctx)
 
   if grad:
+    # $$H \;=\; M + J_{\mathcal{A}}^{\top}\,\operatorname{diag}(D_{\mathcal{A}})\,J_{\mathcal{A}},\qquad M_g \;=\; H^{-1}\,\nabla\phi\quad\text{(Cholesky-factor }H\text{; }M_g\text{ is the Newton/preconditioned direction, descent step is }-M_g\text{)}$$
     _update_gradient(m, d, ctx)
 
 
@@ -3336,16 +3369,60 @@ def solve(m: types.Model, d: types.Data):
 
 
 def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
-  """Finds forces that satisfy constraints."""
+  r"""Minimize the (unconstrained, Moreau-soft) constraint cost $\phi$ via damped Newton (default) or nonlinear CG.
+
+  The algorithm is selected by `m.opt.solver`:
+
+  - `SolverType.NEWTON` **(default, inherited from MuJoCo)** — at each iteration build the
+    active-set Hessian $H = M + J_{\mathcal{A}}^{\top} D_{\mathcal{A}} J_{\mathcal{A}}\;(+\,J^{\top}C(\text{Jaref})J\text{ for elliptic cone})$,
+    Cholesky-factor it, and solve $H\,M_g = \nabla\phi$ for the Newton direction $-M_g$.
+    Then line-search along it. Few iterations (typically ≤ 10, often 1–3 with warm start),
+    each expensive (full Cholesky every iteration in the elliptic case — see [solver.py:3241](solver.py)).
+  - `SolverType.CG` — nonlinear Polak-Ribière CG with $M^{-1}$ preconditioner
+    (`smooth.solve_m`, reuses the LDL factorization built in `fwd_position`).
+    Cheap per iteration but linear convergence — typically needs many more iterations.
+
+  Both paths are primal (decision variable is $\ddot q$); dual multipliers $\lambda$ fall
+  out as KKT byproducts and are written to `d.efc.force` each iteration.
+
+  The cost (elliptic friction cone case, the default `m.opt.cone`) is
+
+  $$\phi(\ddot q) \;=\; \underbrace{\tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}})}_{\text{Gauss term}} \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(\underbrace{J_c\ddot q - a^{\text{ref}}_c}_{=:\,a_c}\big),$$
+
+  where for each contact $c$ with normal residual $a_n$, tangent residual $a_t \in \mathbb{R}^{\dim_c - 1}$,
+  effective friction $\mu_c = \text{friction}[0]/\sqrt{\text{impratio}}$, anisotropic
+  scales $\mu_{t,j} = \text{friction}[j-1]$, normal regularization $D_n$, and
+  scaled coords $N = \mu_c\, a_n,\; u_j = \mu_{t,j}\, a_{t,j},\; T = \|u\|$:
+
+  $$s_{\mathcal{K}_c}(a_c) \;=\; \begin{cases}
+      0 & N \geq \mu_c T \quad\text{(inside friction cone — separating)} \\[4pt]
+      \dfrac{D_n}{2(1+\mu_c^{2})}\big(a_n - \|u\|\big)^{2} \;\equiv\; \dfrac{D_n}{2\mu_c^{2}(1+\mu_c^{2})}(N-\mu_c T)^{2} & \text{otherwise (cone-boundary projection)} \\[4pt]
+      \tfrac12 \sum_{i \in c} D_i\, a_i^{2} & \mu_c N + T \leq 0 \quad\text{(polar cone — deep penetration)}
+  \end{cases}$$
+
+  Equality, friction-loss, limit, and pyramidal rows use simpler per-row penalties
+  (also defined in `_update_constraint`); the cone case above is what dominates
+  contact-rich models.
+
+  Iterates $\ddot q \leftarrow \ddot q + \alpha\, s$ along Newton-preconditioned search
+  directions until each batched world either converges (gradient small / cost stalled)
+  or hits `m.opt.iterations`. The whole loop body is one Warp kernel; on supported
+  setups the loop itself lives in a CUDA graph (`capture_while`) so the host never
+  participates in the iteration. Dual variables $\lambda_i$ (per-row constraint
+  forces) fall out as KKT byproducts and are written to `d.efc.force` each iteration
+  (see `_update_constraint` lines ~1852–1933).
+  """
+  # $$\ddot q^{(0)} \;\leftarrow\; \begin{cases}\ddot q_{\text{warmstart}} & \text{(previous step's solution; default — typically a few iterations from optimum)}\\ \ddot q_{\text{smooth}} & \text{(cold start; chosen when WARMSTART disabled)}\end{cases}$$
+  
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
     wp.copy(d.qacc, d.qacc_warmstart)
   else:
     wp.copy(d.qacc, d.qacc_smooth)
 
-  #  context
+  # $$\text{Jaref},\;M\ddot q,\;\phi(\ddot q^{(0)}),\;\nabla\phi,\;M_g = H^{-1}\nabla\phi\quad\text{(build initial solver state; see }\texttt{init\_context}\text{)}$$
   init_context(m, d, ctx, grad=True)
 
-  # search = -Mgrad
+  # $$s \;\leftarrow\; -M_g,\qquad s\!\cdot\! s \;\leftarrow\; \|s\|^2\quad\text{(initial CG search direction = Newton step; }\beta_0 = 0\text{ in the Polak-Ribière update)}$$
   wp.launch(
     solve_init_search,
     dim=(d.nworld, m.nv),
@@ -3353,9 +3430,25 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     outputs=[ctx.search, ctx.search_dot],
   )
 
+  # Scratch buffer for parallel line search: per-world, per-trial-α cost samples.
+  # Empty (zero-width) when `ls_parallel` is off — line search is sequential then.
   step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
 
+  # $$\texttt{nsolving} \;\leftarrow\; \#\{\text{batched worlds not yet converged}\} = n_{\text{world}}\quad\text{(loop guard for the CUDA-graph while)}$$
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
+  
+  # One iteration of `_solver_iteration` does, per non-converged world:
+  
+  #   1. line search: $\alpha = \arg\min_{\alpha} \phi(\ddot q + \alpha s)$
+  
+  #   2. step:        $\ddot q \leftarrow \ddot q + \alpha s$
+  
+  #   3. update:      recompute $\text{Jaref},\,M\ddot q,\,\phi,\,\nabla\phi,\,M_g$ at new $\ddot q$
+  
+  #   4. CG combine:  $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$ (Polak-Ribière), $s \leftarrow -M_g + \beta\, s$
+  
+  #   5. converge:    if $\|\nabla\phi\|, |\Delta\phi|$ small or budget exhausted, set $\texttt{done}=\text{true}$ and decrement `nsolving`
+  
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.

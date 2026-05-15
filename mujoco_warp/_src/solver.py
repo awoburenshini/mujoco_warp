@@ -2909,9 +2909,20 @@ def _JTDAJ_sparse(
 
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
-  # grad = Ma - qfrc_smooth - qfrc_constraint
+  r"""Compute $\nabla\phi$ and the search-direction preconditioner $M_g$.
+
+  Newton path (default) — dense reading order:
+    1. $\nabla\phi = M\ddot q - \tau_{\text{smooth}} - J^{\top}\lambda \;\;(=\,\text{efc.Ma} - \text{qfrc\_smooth} - \text{qfrc\_constraint})$
+    2. $H \leftarrow M$ + $J_{\mathcal{A}}^{\top} D_{\mathcal{A}} J_{\mathcal{A}}$ via `update_gradient_JTDAJ_dense_tiled` (one tile-matmul kernel; loads $M$ as the starting accumulator, then adds the active-set rank-$\text{nefc}$ outer product).
+    3. (elliptic cone only) $H \mathrel{+}= J^{\top} C(\text{Jaref})\, J$ via `update_gradient_JTCJ_dense` (cone middle-zone curvature).
+    4. Cholesky factor $H$ and solve $H M_g = \nabla\phi$ via `_cholesky_factorize_solve`.
+
+  CG path: skip $H$, take $M_g = M^{-1}\nabla\phi$ via `smooth.solve_m` (reuses the LDL of $M$ from `fwd_position`).
+  """
+  # $$\texttt{grad\_dot}_w \leftarrow 0\quad\text{(per-world }\|\nabla\phi\|^2\text{ accumulator; reset before atomic adds below)}$$
   wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.grad_dot])
 
+  # $$\nabla\phi \;=\; M\ddot q \;-\; \tau_{\text{smooth}} \;-\; \underbrace{J^{\top}\lambda}_{\texttt{qfrc\_constraint}}\quad\text{(KKT residual; }0\text{ at optimum). Also accumulates }\|\nabla\phi\|^2\text{ into }\texttt{grad\_dot}\text{.}$$
   wp.launch(
     update_gradient_grad,
     dim=(d.nworld, m.nv),
@@ -2920,10 +2931,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   )
 
   if m.opt.solver == types.SolverType.CG:
+    # $$M_g \;=\; M^{-1}\,\nabla\phi\quad\text{(reuse the LDL factor of }M\text{ already built in }\texttt{fwd\_position}\text{; }\mathcal{O}(n_v^2)\text{ triangular solve)}$$
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
-    # h = qM + (efc_J.T * efc_D * active) @ efc_J
+    # $$H \;=\; M \;+\; J_{\mathcal{A}}^{\top}\,\operatorname{diag}(D_{\mathcal{A}})\,J_{\mathcal{A}}\quad\text{(active-set Newton Hessian without the cone term)}$$
     if m.is_sparse:
+      # --- sparse path (skip if you only care about dense) ---
       ctx.h.zero_()
       wp.launch(
         _JTDAJ_sparse,
@@ -2939,6 +2952,22 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
     else:
+      # Dense: one tile-matmul kernel per world.
+      # Inside the kernel:
+      #   - All worlds share the SAME padded shape: J is (nworld, njmax, nv_pad), D is (nworld, njmax).
+      #     `m.nv_pad` rounds up `nv` to the tile size, `d.njmax` is a global upper bound on `nefc`.
+      #     Per-world actual row count is `d.nefc[worldid]` (≤ njmax).
+      #   - Initial accumulator $H \leftarrow M$ (loaded once: `wp.tile_load(qM_in[worldid], ...)`).
+      #   - Stream over all `njmax` rows in tiles of `TILE_SIZE_JTDAJ_DENSE = 16`; for each tile,
+      #     two masks zero out $D_k$:
+      #       (a) `active_check`: rows with tile-id ≥ nefc - k are padding for this world.
+      #       (b) `state_check` : rows with `state ≠ QUADRATIC` are inactive (satisfied / cone-top).
+      #     Either mask → $D_k = 0$ → that row's rank-1 outer product adds zero. **This is how
+      #     differently-sized per-world J's coexist in one launch**: pad to njmax × nv_pad, then
+      #     mask via D=0. Wasted FLOPs on padding are the price for SIMT uniformity.
+      #   - Tile body: $H \mathrel{+}= (J_k^{\top} \cdot \operatorname{diag}(D_k))\,J_k$.
+      # `scoped_mathdx_gemm_disabled()`: forces Warp's tile-matmul to use the hand-written path
+      # rather than the cuBLASDx-based one (the latter wasn't faster here at typical nv sizes).
       with scoped_mathdx_gemm_disabled():
         wp.launch_tiled(
           update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
@@ -2956,6 +2985,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
+      # $$H \;\mathrel{+}=\; J^{\top}\,C(\text{Jaref})\,J\quad\text{(elliptic-cone middle-zone curvature; }C\text{ is the per-contact }\dim\times\dim\text{ cone-projection Hessian — depends on Jaref, must be recomputed every iteration)}$$
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
       # Profiling suggests that only a fraction of blocks out of the original
       # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
@@ -3035,6 +3065,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
           outputs=[ctx.h],
         )
 
+    # $$H = L L^{\top},\qquad M_g \;=\; H^{-1}\,\nabla\phi \;=\; L^{-\top} L^{-1} \nabla\phi\quad\text{(tiled blocked Cholesky factor + two triangular solves)}$$
     _cholesky_factorize_solve(m, d, ctx)
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")

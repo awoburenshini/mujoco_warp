@@ -1,0 +1,48 @@
+<mujoco model="franka grasping box">
+  <include file="panda.xml"/>
+
+  <option timestep="0.002" integrator="implicitfast">
+    <flag eulerdamp="disable"/>
+  </option>
+
+  <statistic center="0.4 0 0.4" extent="1"/>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" mark="edge"
+             rgb1=".1 .2 .3" rgb2=".2 .3 .4" markrgb=".8 .8 .8"
+             width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="5 5" texuniform="true" reflectance=".2"/>
+    <texture name="skybox" type="skybox" builtin="gradient"
+             rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="3072"/>
+  </asset>
+
+  <worldbody>
+    <camera name="front" pos="1.3 -0.2 0.4" fovy="50" mode="fixed" euler="1.0 0.9 1.5"/>
+    <camera name="side" pos="0.5 -1.0 0.25" fovy="40" mode="fixed" xyaxes="1 0 0 0 0.4 0.9"/>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="grid" contype="1" conaffinity="1"/>
+
+    <!-- Box, sized to fit a partially-closed gripper. Fingers initialized
+         already touching its sides to ensure grasp. -->
+    <body name="box" pos="0.485 0 0.10">
+      <freejoint name="box_free"/>
+      <geom name="box_geom" type="box" size="0.018 0.018 0.025"
+            rgba="0.9 0.3 0.2 1" mass="0.05"
+            friction="2.0 0.5 0.5" condim="4"/>
+    </body>
+  </worldbody>
+
+  <!-- Pre-grasp: hand around box; finger joints at 0.018 = exactly touching
+       box sides (box half-width 0.018). Gripper ctrl=0 squeezes them tighter
+       (PD-controlled hold via actuator force range 200N). -->
+  <keyframe>
+    <key name="pre_grasp"
+         qpos="0 0.3526 0 -2.2696 0 2.3127 0.785  0.018 0.018
+               0.485 0 0.10  1 0 0 0"
+         ctrl="0 0.3526 0 -2.2696 0 2.3127 0.785  0"/>
+  </keyframe>
+</mujoco>

@@ -42,6 +42,9 @@ def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
   Returns:
       3D point and 3D direction in local geom frame
   """
+  # <md>
+  # $$o' = R^{\top}(o - p),\qquad d' = R^{\top} d\qquad\text{(map ray } r(t)=o+t\,d \text{ into local geom frame)}$$
+  # </md>
   matT = wp.transpose(mat)
   lpnt = matT @ (pnt - pos)
   lvec = matT @ vec
@@ -105,6 +108,9 @@ def _ray_eliminate(
 @wp.func
 def _ray_quad(a: float, b: float, c: float) -> Tuple[float, wp.vec2]:
   """Compute solutions from quadratic: a*x^2 + 2*b*x + c = 0."""
+  # <md>
+  # $$a\,t^2 + 2b\,t + c = 0,\quad t = \frac{-b \pm \sqrt{b^2 - a c}}{a}\qquad\text{(smallest non-negative root returned as the hit distance)}$$
+  # </md>
   det = b * b - a * c
   if det < MJ_MINVAL:
     return -1.0, wp.vec2(-1.0, -1.0)
@@ -171,6 +177,9 @@ def _ray_triangle(
   if t0 < 0.0 or t1 < 0.0 or t0 + t1 > 1.0:
     return -1.0, wp.vec3()
 
+  # <md>
+  # $$n = (v_0 - v_2)\times(v_1 - v_2),\qquad t = \frac{-\,(o - v_2)\cdot n}{d\cdot n}\qquad\text{(ray-plane intersection for the triangle's supporting plane)}$$
+  # </md>
   # intersect ray with plane of triangle
   dif0 = v0 - v2
   dif1 = v1 - v2
@@ -194,6 +203,9 @@ def ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.
   if lvec[2] > -MJ_MINVAL:
     return -1.0, wp.vec3()
 
+  # <md>
+  # $$t = \frac{-o'_z}{d'_z}\qquad\text{(plane is local } z=0 \text{ with normal } n=\hat z\text{; ray-plane } t = -(o'\cdot n)/(d'\cdot n))$$
+  # </md>
   # intersection with plane
   x = -lpnt[2] / lvec[2]
   if x < 0.0:
@@ -211,6 +223,9 @@ def ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.
 @wp.func
 def ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, wp.vec3]:
   """Returns the distance and normal at which a ray intersects with a sphere."""
+  # <md>
+  # $$\lVert (o - p) + t\,d \rVert^2 = r^2 \;\Longrightarrow\; \underbrace{(d\cdot d)}_{a}\,t^2 + 2\underbrace{(d\cdot(o-p))}_{b}\,t + \underbrace{\lVert o-p\rVert^2 - r^2}_{c} = 0$$
+  # </md>
   dif = pnt - pos
 
   a = wp.dot(vec, vec)
@@ -220,6 +235,9 @@ def ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> Tup
   sol, _ = _ray_quad(a, b, c)
   normal = wp.vec3()
   if sol >= 0:
+    # <md>
+    # $$n = \frac{r(t) - p}{\lVert r(t) - p\rVert},\qquad r(t) = o + t\,d\qquad\text{(outward unit normal at the sphere hit point)}$$
+    # </md>
     s = pnt + vec * sol
     normal = wp.normalize(s - pos)
   return sol, normal
@@ -240,6 +258,9 @@ def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: w
   # init solution
   x = -1.0
 
+  # <md>
+  # $$(o'_x + t\,d'_x)^2 + (o'_y + t\,d'_y)^2 = r^2\qquad\text{(infinite cylinder of radius } r=\text{size}_0 \text{ about the local } z \text{ axis)}$$
+  # </md>
   # cylinder round side: (x * lvec + lpnt)' * (x * lvec + lpnt) = size[0] * size[0]
   sq_size0 = size[0] * size[0]
   a = lvec[0] * lvec[0] + lvec[1] * lvec[1]
@@ -256,6 +277,9 @@ def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: w
     if x < 0.0 or sol < x:
       x = sol
 
+  # <md>
+  # $$\lVert (o' - c_{\pm}) + t\,d' \rVert^2 = r^2,\qquad c_{\pm} = (0,0,\pm h)\qquad\text{(hemispherical caps centered at the half-length } h=\text{size}_1)$$
+  # </md>
   # top cap
   ldif = wp.vec3(lpnt[0], lpnt[1], lpnt[2] - size[1])
   a += lvec[2] * lvec[2]
@@ -308,6 +332,9 @@ def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
   # invert size^2
   s = wp.vec3(safe_div(1.0, size[0] * size[0]), safe_div(1.0, size[1] * size[1]), safe_div(1.0, size[2] * size[2]))
 
+  # <md>
+  # $$(o' + t\,d')^{\top} S\, (o' + t\,d') = 1,\qquad S = \operatorname{diag}\!\big(\tfrac{1}{a^2},\tfrac{1}{b^2},\tfrac{1}{c^2}\big)\qquad\text{(unit ellipsoid quadric, semi-axes } a,b,c=\text{size})$$
+  # </md>
   # (x * lvec + lpnt)' * diag(1 / size^2) * (x * lvec + lpnt) = 1
   slvec = wp.cw_mul(s, lvec)
   a = wp.dot(slvec, lvec)
@@ -322,6 +349,9 @@ def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
     # surface intersection (local frame)
     l = lpnt + lvec * sol
 
+    # <md>
+    # $$n \propto \nabla\big(x^{\top} S x\big) = 2\,S\,r'(t),\qquad n = R\,\widehat{S\,r'(t)}\qquad\text{(quadric gradient gives the surface normal, rotated back to world)}$$
+    # </md>
     # gradient of ellipsoid function
     normal = wp.cw_mul(s, l)
     normal = wp.normalize(normal)
@@ -349,6 +379,9 @@ def ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
   # flat sides
   if wp.abs(lvec[2]) > MJ_MINVAL:
     for side in range(-1, 2, 2):
+      # <md>
+      # $$o'_z + t\,d'_z = \pm h \;\Longrightarrow\; t = \frac{\pm h - o'_z}{d'_z}\qquad\text{(intersection with the two flat end caps at } z=\pm h=\pm\text{size}_1)$$
+      # </md>
       # solution of: lpnt[2] + x * lvec[2] = side * height_size
       sol = (float(side) * size[1] - lpnt[2]) / lvec[2]
 
@@ -363,6 +396,9 @@ def ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
             x = sol
             part = side
 
+  # <md>
+  # $$(o'_x + t\,d'_x)^2 + (o'_y + t\,d'_y)^2 = r^2\qquad\text{(round side: infinite cylinder of radius } r=\text{size}_0\text{; accept only if } |o'_z + t\,d'_z| \le h)$$
+  # </md>
   # (x * lvec + lpnt)' * (x * lvec + lpnt) = size[0] * size[0]
   a = lvec[0] * lvec[0] + lvec[1] * lvec[1]
   b = lvec[0] * lpnt[0] + lvec[1] * lpnt[1]
@@ -417,6 +453,9 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
   for i in range(3):
     if wp.abs(lvec[i]) > MJ_MINVAL:
       for side in range(-1, 2, 2):
+        # <md>
+        # $$o'_i + t\,d'_i = \pm s_i \;\Longrightarrow\; t = \frac{\pm s_i - o'_i}{d'_i}\qquad\text{(slab method: hit each of the 6 axis-aligned faces, accept if within the face rectangle)}$$
+        # </md>
         # solution of: lpnt[i] + x * lvec[i] = side * size[i]
         sol = (float(side) * size[i] - lpnt[i]) / lvec[i]
 
@@ -609,6 +648,9 @@ def ray_hfield(
           z0 = hfield_data[adr + int(wp.round(y0 + 0.0))]
           z1 = hfield_data[adr + int(wp.round(y0 + 1.0))]
 
+      # <md>
+      # $$z_{\text{edge}}(y) = z_0\,(y_0 + 1 - y) + z_1\,(y - y_0)\qquad\text{(linear interpolation of the height-field edge profile; ray point accepted if below it)}$$
+      # </md>
       # check if point is below line segments
       if z < z0 * (y0 + 1.0 - y) + z1 * (y - y0):
         x = all[i]
@@ -722,6 +764,9 @@ def ray_mesh_with_bvh(
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
   hit = wp.mesh_query_ray(mesh_bvh_id[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
 
+  # <md>
+  # $$d'\cdot n < 0\qquad\text{(backface culling: keep only front-facing triangles whose normal opposes the local ray direction)}$$
+  # </md>
   if hit and wp.dot(lvec, n) < 0.0:  # Backface culling in local space
     normal = mat @ n
     normal = wp.normalize(normal)
@@ -1121,6 +1166,9 @@ def _ray_bvh(
   min_geomid = int(-1)
   min_normal = wp.vec3()
 
+  # <md>
+  # $$t^\star = \min_{g}\; t_g\qquad\text{(closest-hit reduction: traverse BVH-pruned candidate geoms and keep the smallest non-negative intersection distance)}$$
+  # </md>
   query = wp.bvh_query_ray(bvh_id, ray_origin, ray_dir, group_root[worldid])
   bounds_nr = int(0)
 

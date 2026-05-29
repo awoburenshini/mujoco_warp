@@ -46,6 +46,9 @@ def _tree_edges(
   tree_tree: wp.array3d[int],  # kernel_analyzer: off
 ):
   """Find tree edges."""
+  # <md>
+  # $$G=(V,E),\quad V=\{\,\text{trees }t\,\},\quad (t_a,t_b)\in E \iff \exists\, c:\, t_a,t_b\in\text{trees}(c)\qquad\text{(constraints couple DOF-trees)}$$
+  # </md>
   worldid, efcid = wp.tid()
 
   # skip if beyond active constraints
@@ -59,6 +62,9 @@ def _tree_edges(
   tree1 = int(-1)
   use_generic = int(0)
 
+  # <md>
+  # $$c\;\longmapsto\;\bigl(t_0,t_1\bigr)=\bigl(\texttt{tree}(\text{obj}_1),\,\texttt{tree}(\text{obj}_2)\bigr)\qquad\text{(each constraint }c\text{ yields the endpoint tree(s) it links)}$$
+  # </md>
   # equality (connect/weld)
   if efc_type == ConstraintType.EQUALITY:
     eq_t = eq_type[efc_id]
@@ -114,6 +120,9 @@ def _tree_edges(
       tree0 = tree1
       tree1 = -1
 
+    # <md>
+    # $$t_0=t_1\;\Rightarrow\;(t_0,t_0)\in E\ \text{(self-loop)};\qquad t_0\neq t_1\;\Rightarrow\;(t_0,t_1),(t_1,t_0)\in E\quad\text{(symmetric adjacency)}$$
+    # </md>
     # mark the edge
     if tree0 >= 0:
       if tree1 < 0 or tree0 == tree1:
@@ -127,6 +136,9 @@ def _tree_edges(
         wp.atomic_max(tree_tree, worldid, t2, t1, 1)
     return
 
+  # <md>
+  # $$\text{trees}(c)=\bigl\{\,\texttt{tree}(d)\;:\;J_{c,d}\neq 0\,\bigr\},\qquad (t_a,t_b)\in E\ \ \forall\, t_a,t_b\in\text{trees}(c)\quad\text{(generic: nonzero Jacobian row entries couple their trees)}$$
+  # </md>
   # generic: scan Jacobian row
   first_tree = int(-1)
   has_cross_edge = int(0)
@@ -194,6 +206,9 @@ def _flood_fill(
   stack_out: wp.array2d[int],
 ):
   """DFS flood fill to discover islands using tree_tree matrix."""
+  # <md>
+  # $$\mathcal{P}_1 \sqcup \mathcal{P}_2 \sqcup \dots \sqcup \mathcal{P}_{n_{\text{island}}} = \{\,t\in V : \deg(t)>0\,\}\qquad\text{(connected components of }G\text{; isolated trees excluded)}$$
+  # </md>
   worldid = wp.tid()
   nisland = int(0)
 
@@ -226,6 +241,9 @@ def _flood_fill(
       if labels_in[worldid, v] != -1:
         continue
 
+      # <md>
+      # $$\text{find}(v)\;\equiv\;k,\qquad \mathcal{P}_k \leftarrow \mathcal{P}_k \cup \{v\}\quad\text{(union: label }v\text{ with the seed's component }k\text{ via DFS closure)}$$
+      # </md>
       # assign to current island
       tree_island_out[worldid, v] = nisland
 
@@ -236,6 +254,9 @@ def _flood_fill(
             stack_out[worldid, nstack] = neighbor
             nstack = nstack + 1
 
+    # <md>
+    # $$k \leftarrow k+1\qquad\text{(component }\mathcal{P}_k\text{ exhausted; advance to next unlabeled seed)}$$
+    # </md>
     # island filled
     nisland = nisland + 1
 
@@ -249,10 +270,16 @@ def island(m: types.Model, d: types.Data):
     d.nisland.zero_()
     return
 
+  # <md>
+  # $$A \in \{0,1\}^{n_{\text{tree}}\times n_{\text{tree}}},\qquad A_{ab}=1 \iff (t_a,t_b)\in E\quad\text{(symmetric adjacency matrix of }G\text{)}$$
+  # </md>
   # Step 1: Find tree edges
   tree_tree = wp.zeros((d.nworld, m.ntree, m.ntree), dtype=int)
   tree_edges(m, d, tree_tree)
 
+  # <md>
+  # $$\{\mathcal{P}_k\}_{k=1}^{n_{\text{island}}} = \text{ConnectedComponents}(G),\qquad V=\bigsqcup_k \mathcal{P}_k\ \sqcup\ \{\text{isolated}\}\quad\text{(partition DOF-trees into independent islands)}$$
+  # </md>
   # Step 2: DFS flood fill
   d.tree_island.fill_(-1)
   stack_scratch = wp.empty((d.nworld, m.ntree * m.ntree), dtype=int)

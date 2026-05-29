@@ -94,6 +94,9 @@ def _discrete_geoms(g1: int, g2: int) -> bool:
   )
 
 
+# <md>
+# $$S_A(d) = \arg\max_{x\in A}\; d\cdot x \qquad\text{(support function: farthest point of convex set } A \text{ along direction } d\text{)}$$
+# </md>
 @wp.func
 def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp = SupportPoint()
@@ -103,8 +106,14 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     sp.point = geom.pos + (geom.size[0] + 0.5 * geom.margin) * dir
     return sp
 
+  # <md>
+  # $$\hat d = R^{\top} d \qquad\text{(rotate query direction into the geom's local frame; support is computed there, then mapped back by } x = R\,\hat x + p\text{)}$$
+  # </md>
   local_dir = wp.transpose(geom.rot) @ dir
   if geomtype == GeomType.BOX:
+    # <md>
+    # $$S_{\text{box}}(\hat d) = \bigl(\operatorname{sign}(\hat d_x)\,h_x,\ \operatorname{sign}(\hat d_y)\,h_y,\ \operatorname{sign}(\hat d_z)\,h_z\bigr) \qquad\text{(support of an axis-aligned box is the sign-selected corner, } h \text{ half-extents)}$$
+    # </md>
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
     sp.point = geom.rot @ res + geom.pos
@@ -140,6 +149,9 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
         sp.cached_index = geom.index
         max_dist = wp.dot(geom.vert[geom.index], local_dir)
         sp.point = geom.vert[geom.index]
+      # <md>
+      # $$S_{\text{mesh}}(\hat d) = \arg\max_{v\in V}\; \hat d\cdot v \qquad\text{(brute-force support: linear scan over all mesh vertices } V\text{)}$$
+      # </md>
       # exhaustive search over all vertices
       for i in range(geom.vertnum):
         vert = geom.vert[geom.vertadr + i]
@@ -157,6 +169,9 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       prev = int(-1)
       imax = wp.where(geom.index > -1, geom.index, 0)
 
+      # <md>
+      # $$v^{\star} \leftarrow \arg\max_{v\in \mathcal{N}(v^{\star})}\; \hat d\cdot v \quad\text{until fixed point}\qquad\text{(hill-climb over the vertex-adjacency graph; } \mathcal{N} \text{ = neighbors, } O(\log|V|) \text{ amortized)}$$
+      # </md>
       # hillclimb until no change
       while imax != prev:
         prev = imax
@@ -197,6 +212,9 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   if pt.nface == pt.face.shape[0]:
     return 0.0
 
+  # <md>
+  # $$r = \operatorname{proj}_{\text{aff}\{p_1,p_2,p_3\}}(0),\qquad \lVert r\rVert^2 \ \text{stored as the face's squared distance to the origin} \qquad\text{(attach an EPA polytope face; } r \text{ is its supporting point closest to the origin)}$$
+  # </md>
   # compute witness point v
   p1 = pt.vert[2 * v1] - pt.vert[2 * v1 + 1]
   p2 = pt.vert[2 * v2] - pt.vert[2 * v2 + 1]
@@ -213,6 +231,9 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   return pt.face_norm2[idx]
 
 
+# <md>
+# $$S_{A\ominus B}(d) = S_A(d) - S_B(-d) \qquad\text{(support of the Minkowski difference } A\ominus B = \{a-b: a\in A,\,b\in B\}\text{; the two source points are stored so witness points can be recovered)}$$
+# </md>
 @wp.func
 def _epa_support(
   pt: Polytope, idx: int, geom1: Geom, geom2: Geom, geom1_type: int, geom2_type: int, dir: wp.vec3
@@ -249,6 +270,9 @@ def _almost_equal(v1: wp.vec3, v2: wp.vec3) -> bool:
   return wp.abs(v1[0] - v2[0]) < MINVAL and wp.abs(v1[1] - v2[1]) < MINVAL and wp.abs(v1[2] - v2[2]) < MINVAL
 
 
+# <md>
+# $$\lambda = \arg\min_{\lambda\ge 0,\ \mathbf 1^{\top}\lambda = 1}\ \Bigl\lVert \sum_{i} \lambda_i\, s_i \Bigr\rVert^2 \qquad\text{(Signed-Volumes distance sub-algorithm: barycentric coords of the closest point of the simplex to the origin; dispatch on simplex dimension } n\text{)}$$
+# </md>
 @wp.func
 def _subdistance(n: int, simplex: mat43) -> wp.vec4:
   if n == 4:
@@ -276,6 +300,9 @@ def _same_sign(a: float, b: float) -> int:
   return 0
 
 
+# <md>
+# $$\operatorname{proj}_{\overline{v_1 v_2}}(0) = v_2 - \frac{v_2\cdot(v_2-v_1)}{\lVert v_2-v_1\rVert^2}\,(v_2-v_1) \qquad\text{(orthogonal projection of the origin onto the line through } v_1,v_2\text{)}$$
+# </md>
 @wp.func
 def _project_origin_line(v1: wp.vec3, v2: wp.vec3) -> wp.vec3:
   diff = v2 - v1
@@ -283,6 +310,9 @@ def _project_origin_line(v1: wp.vec3, v2: wp.vec3) -> wp.vec3:
   return v2 + scl * diff
 
 
+# <md>
+# $$n = (v_3-v_2)\times(v_2-v_1),\qquad \operatorname{proj}_{\text{aff}\{v_1,v_2,v_3\}}(0) = \frac{n\cdot v_2}{n\cdot n}\,n \qquad\text{(orthogonal projection of the origin onto the plane; three cyclic forms tried for numerical robustness)}$$
+# </md>
 @wp.func
 def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec3, int]:
   z = wp.vec3(0.0)
@@ -315,6 +345,9 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
   return (nv / nn) * n, 0
 
 
+# <md>
+# $$\lambda_i = \frac{C_{4i}}{\det M},\quad C_{4i} = (-1)^{i+4}\det\!\bigl[s_{j\ne i}\bigr],\qquad \det M = 6\,\mathrm{SignVol}(s_1,s_2,s_3,s_4) \qquad\text{(tetrahedron case: if all } \operatorname{sign}(C_{4i})=\operatorname{sign}(\det M) \text{ the origin is inside, else recurse onto the closest face via } S_{2D}\text{)}$$
+# </md>
 @wp.func
 def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3) -> wp.vec4:
   #  [[ s1_x, s2_x, s3_x, s4_x ],
@@ -391,6 +424,9 @@ def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3) -> wp.vec4:
   return coordinates
 
 
+# <md>
+# $$\lambda_i = \frac{C_{3i}}{\sum_j C_{3j}} \qquad\text{(triangle case: project origin onto the triangle's affine hull, then compare 2D signed areas } C_{3i} \text{ on the dominant projection plane; if signs disagree, recurse onto the closest edge via } S_{1D}\text{)}$$
+# </md>
 @wp.func
 def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
   # project origin onto affine hull of the simplex
@@ -536,6 +572,9 @@ def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
   return coordinates
 
 
+# <md>
+# $$\lambda_1 = \frac{p_o - s_2}{s_1 - s_2},\quad \lambda_2 = \frac{s_1 - p_o}{s_1 - s_2}\ \text{(on the dominant axis)} \qquad\text{(edge case: } p_o=\operatorname{proj}_{\overline{s_1 s_2}}(0)\text{; if } \lambda \text{ leaves the segment, clamp to the nearer endpoint } (0,1)\text{)}$$
+# </md>
 @wp.func
 def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   # find projection of origin onto the 1-simplex:
@@ -609,9 +648,15 @@ def gjk(
     geom2.index = sp.cached_index
     simplex_index2[n] = sp.vertex_index
 
+    # <md>
+    # $$w_k = S_A(-\hat x_k) - S_B(\hat x_k) = S_{A\ominus B}(-\hat x_k),\qquad \hat x_k = x_k/\lVert x_k\rVert \qquad\text{(new Minkowski-difference support point in the descent direction toward the origin)}$$
+    # </md>
     # compute the kth support point
     simplex[n] = simplex1[n] - simplex2[n]
 
+    # <md>
+    # $$x_k\cdot w_k > 0 \ \ \Longrightarrow\ \ \text{origin outside } A\ominus B \ \Rightarrow\ \text{disjoint};\qquad \frac{(x_k\cdot w_k)^2}{\lVert x_k\rVert^2} \ge \text{cutoff}^2 \ \Rightarrow\ \text{separation exceeds cutoff, abort}$$
+    # </md>
     if cutoff == 0.0:
       if wp.dot(x_k, simplex[n]) > 0.0:
         result = GJKResult()
@@ -626,6 +671,9 @@ def gjk(
         result.dist = FLOAT_MAX
         return result
 
+    # <md>
+    # $$x_k\cdot(x_k - w_k) < \varepsilon \ \ \Longrightarrow\ \ \text{converged}\qquad\text{(Frank-Wolfe duality gap: }\lVert f(x_k)-f(x_{\min})\rVert^2 \le \langle \nabla f(x_k),\,x_k - w_k\rangle\text{, the GJK termination test)}$$
+    # </md>
     # stopping criteria using the Frank-Wolfe duality gap given by
     #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
     if wp.dot(x_k, x_k - simplex[n]) < epsilon:
@@ -653,6 +701,9 @@ def gjk(
     if n < 1:
       break
 
+    # <md>
+    # $$x_{k+1} = \sum_{i} \lambda_i\, w_i \qquad\text{(closest point of the reduced simplex to the origin; the new iterate, recovered from the barycentric coords)}$$
+    # </md>
     # get the next iteration of x_k
     x_next = _linear_combine(n, coordinates, simplex)
 
@@ -669,6 +720,9 @@ def gjk(
 
   result = GJKResult()
 
+  # <md>
+  # $$x_1^\star = \sum_i \lambda_i\, a_i,\quad x_2^\star = \sum_i \lambda_i\, b_i,\qquad \text{dist} = \lVert x_k\rVert \qquad\text{(witness points on each geom share the simplex barycentric coords; their gap is the distance between } A \text{ and } B\text{)}$$
+  # </md>
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
@@ -863,6 +917,9 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
+  # <md>
+  # $$(\lambda_1,\lambda_2,\lambda_3) = \text{baryc}\bigl(r_f;\,v_1,v_2,v_3\bigr),\qquad x_g = \sum_i \lambda_i\, p_i^{(g)},\qquad \phi = -\lVert r_f\rVert \qquad\text{(witness points: barycentric blend of each geom's face vertices; penetration depth is the negative face distance)}$$
+  # </md>
   face = _get_face_verts(pt.face[face_idx])
   # compute affine coordinates for witness points on plane defined by face
   v1 = pt.vert[2 * face[0]] - pt.vert[2 * face[0] + 1]
@@ -948,6 +1005,9 @@ def _polytope2(
   geomtype2: int,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 1-simplex from GJK."""
+  # <md>
+  # $$\text{seed EPA polytope from a 1-simplex: } R(120^\circ)\ \text{rotate } d_1 \perp (w_1-w_0) \text{ to get 3 extra support points, forming a hexahedron of 5 vertices / 6 faces around the origin}$$
+  # </md>
   diff = simplex[1] - simplex[0]
 
   # find component with smallest magnitude (so cross product is largest)
@@ -1227,6 +1287,9 @@ def _epa(
     idx = int(-1)
     lower2 = float(FLOAT_MAX)
 
+    # <md>
+    # $$\ell = \min_{f}\ \lVert r_f\rVert,\qquad \ell \le \phi \le u \qquad\text{(closest polytope face gives a lower bound on the penetration depth } \phi\text{; loop expands the polytope until } u-\ell < \varepsilon\text{)}$$
+    # </md>
     # find the face closest to the origin (lower bound for penetration depth)
     for i in range(pt.nface):
       if not _is_invalid_face(pt.face[i]) and pt.face_norm2[i] < lower2:
@@ -1242,6 +1305,9 @@ def _epa(
     if lower2 <= 0.0:
       break
 
+    # <md>
+    # $$n = r/\lVert r\rVert,\qquad w = S_{A\ominus B}(n),\qquad u_k = n\cdot w \qquad\text{(expand the polytope outward along the closest face's normal; the new support gives the upper bound } u_k\text{ on } \phi\text{)}$$
+    # </md>
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
@@ -1282,6 +1348,9 @@ def _epa(
       idx = -1
       break
 
+    # <md>
+    # $$\mathcal{H} = \partial\bigl\{f:\ r_f\cdot w - \lVert r_f\rVert^2 > 0\bigr\} \qquad\text{(horizon = boundary edges of all faces visible from the new vertex } w\text{; visible faces are deleted, then new faces fan from } w \text{ to each horizon edge)}$$
+    # </md>
     # compute horizon for w
     for i in range(pt.nface):
       if _is_face_deleted(pt.face[i]):
@@ -2186,6 +2255,9 @@ def _inflate(
       dist = -wp.norm_l2(x1 - x2)
       return dist, x1, x2
 
+  # <md>
+  # $$n = \frac{x_2 - x_1}{\lVert x_2 - x_1\rVert},\quad x_1 \mathrel{+}= m_1 n,\quad x_2 \mathrel{-}= m_2 n,\quad \text{dist} \mathrel{-}= m_1 + m_2 \qquad\text{(re-inflate sphere/capsule shrunk to its core: push witness points back out by the radii/margins along the contact normal } n\text{)}$$
+  # </md>
   n = wp.normalize(x2 - x1)
   if margin1 > 0.0:
     x1 += margin1 * n
@@ -2256,6 +2328,9 @@ def ccd(
     geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
     cutoff -= full_margin1 + full_margin2
 
+  # <md>
+  # $$\text{dist} > \text{tol}\ \Rightarrow\ \text{separated (GJK distance suffices)};\qquad \text{dist} \le \text{tol}\ \Rightarrow\ \text{penetrating} \to \text{seed EPA polytope from the GJK simplex, recover } (\phi, n)$$
+  # </md>
   result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
   # no penetration depth to recover

@@ -22,6 +22,9 @@ from mujoco_warp._src import types
 
 @wp.func
 def mul_quat(u: wp.quat, v: wp.quat) -> wp.quat:
+  # <md>
+  # $$u \otimes v = \big(u_w v_w - \mathbf{u}\cdot\mathbf{v},\; u_w\mathbf{v} + v_w\mathbf{u} + \mathbf{u}\times\mathbf{v}\big)\quad\text{(Hamilton quaternion product)}$$
+  # </md>
   return wp.quat(
     u[0] * v[0] - u[1] * v[1] - u[2] * v[2] - u[3] * v[3],
     u[0] * v[1] + u[1] * v[0] + u[2] * v[3] - u[3] * v[2],
@@ -33,6 +36,9 @@ def mul_quat(u: wp.quat, v: wp.quat) -> wp.quat:
 @wp.func
 def quat_mul_axis(q: wp.quat, axis: wp.vec3f) -> wp.quat:
   """Multiplies a quaternion and an axis."""
+  # <md>
+  # $$q \otimes (0,\,\mathbf{a}) = \big(-\mathbf{q}_v\cdot\mathbf{a},\; q_w\mathbf{a} + \mathbf{q}_v\times\mathbf{a}\big)\quad\text{(quaternion product with pure-vector quaternion }\texttt{axis})$$
+  # </md>
   return wp.quat(
     -q[1] * axis[0] - q[2] * axis[1] - q[3] * axis[2],
     q[0] * axis[0] + q[2] * axis[2] - q[3] * axis[1],
@@ -43,6 +49,9 @@ def quat_mul_axis(q: wp.quat, axis: wp.vec3f) -> wp.quat:
 
 @wp.func
 def rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
+  # <md>
+  # $$q \otimes v \otimes q^{-1} = 2(\mathbf{u}\cdot v)\,\mathbf{u} + (s^2 - \mathbf{u}\cdot\mathbf{u})\,v + 2s\,(\mathbf{u}\times v),\quad q=(s,\mathbf{u})\quad\text{(rotate vector }v\text{ by unit quaternion)}$$
+  # </md>
   s, u = quat[0], wp.vec3(quat[1], quat[2], quat[3])
   r = 2.0 * (wp.dot(u, vec) * u) + (s * s - wp.dot(u, u)) * vec
   r = r + 2.0 * s * wp.cross(u, vec)
@@ -51,6 +60,9 @@ def rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
 
 @wp.func
 def axis_angle_to_quat(axis: wp.vec3, angle: float) -> wp.quat:
+  # <md>
+  # $$q = \Big(\cos\tfrac{\theta}{2},\; \hat{\mathbf{n}}\,\sin\tfrac{\theta}{2}\Big)\quad\text{(unit quaternion from axis }\hat{\mathbf{n}}=\texttt{axis}\text{ and angle }\theta=\texttt{angle})$$
+  # </md>
   s, c = wp.sin(angle * 0.5), wp.cos(angle * 0.5)
   axis = axis * s
   return wp.quat(c, axis[0], axis[1], axis[2])
@@ -59,6 +71,9 @@ def axis_angle_to_quat(axis: wp.vec3, angle: float) -> wp.quat:
 @wp.func
 def quat_to_mat(quat: wp.quat) -> wp.mat33:
   """Converts a quaternion into 3x3 rotation matrix."""
+  # <md>
+  # $$R(q) = (q_w^2 - \mathbf{q}_v^{\top}\mathbf{q}_v)\,I + 2\,\mathbf{q}_v\mathbf{q}_v^{\top} + 2\,q_w\,[\mathbf{q}_v]_\times \;\in\; SO(3)\quad\text{(unit quaternion to rotation matrix)}$$
+  # </md>
   q00 = quat[0] * quat[0]
   q01 = quat[0] * quat[1]
   q02 = quat[0] * quat[2]
@@ -86,6 +101,9 @@ def quat_to_mat(quat: wp.quat) -> wp.mat33:
 @wp.func
 def quat_z2vec(vec: wp.vec3) -> wp.quat:
   """Compute quaternion performing rotation from z-axis to given vector."""
+  # <md>
+  # $$q:\; R(q)\,\hat{\mathbf{z}} = \frac{\mathbf{v}}{\lVert\mathbf{v}\rVert},\qquad \hat{\mathbf{n}} = \frac{\hat{\mathbf{z}}\times\mathbf{v}}{\lVert\hat{\mathbf{z}}\times\mathbf{v}\rVert},\quad \theta = \operatorname{atan2}\big(\lVert\hat{\mathbf{z}}\times\mathbf{v}\rVert,\, v_z\big)\quad\text{(shortest rotation }\hat{\mathbf{z}}\!\to\!\mathbf{v})$$
+  # </md>
   quat = wp.quat(0.0, 0.0, 0.0, 1.0)
 
   # normalize vector; if too small, no rotation
@@ -120,6 +138,9 @@ def quat_inv(quat: wp.quat) -> wp.quat:
 @wp.func
 def inert_vec(i: types.vec10, v: wp.spatial_vector) -> wp.spatial_vector:
   """mju_mulInertVec: multiply 6D vector (rotation, translation) by 6D inertia matrix."""
+  # <md>
+  # $$\mathcal{I}\,v = \begin{bmatrix} I & [\mathbf{c}]_\times \\ -[\mathbf{c}]_\times & m\,I \end{bmatrix} \begin{bmatrix} \boldsymbol{\omega} \\ \mathbf{u} \end{bmatrix}\quad\text{(6}\times\text{6 spatial inertia times motion vector; }\texttt{i}\text{ packs }I,\,m\mathbf{c},\,m)$$
+  # </md>
   return wp.spatial_vector(
     i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5],
     i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5],
@@ -133,6 +154,9 @@ def inert_vec(i: types.vec10, v: wp.spatial_vector) -> wp.spatial_vector:
 @wp.func
 def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of two motions."""
+  # <md>
+  # $$u \times v = \begin{bmatrix} \boldsymbol{\omega}_u\times\boldsymbol{\omega}_v \\ \boldsymbol{\omega}_u\times\mathbf{v}_v + \mathbf{v}_u\times\boldsymbol{\omega}_v \end{bmatrix}\quad\text{(spatial motion cross product }\operatorname{crm}(u)\,v)$$
+  # </md>
   u0 = wp.vec3(u[0], u[1], u[2])
   u1 = wp.vec3(u[3], u[4], u[5])
   v0 = wp.vec3(v[0], v[1], v[2])
@@ -147,6 +171,9 @@ def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vecto
 @wp.func
 def motion_cross_force(v: wp.spatial_vector, f: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of a motion and a force."""
+  # <md>
+  # $$v \times^{*} f = \begin{bmatrix} \boldsymbol{\omega}_v\times\mathbf{f}_\omega + \mathbf{v}_v\times\mathbf{f}_v \\ \boldsymbol{\omega}_v\times\mathbf{f}_v \end{bmatrix}\quad\text{(spatial force cross product }\operatorname{crf}(v)\,f = -\operatorname{crm}(v)^{\top}f)$$
+  # </md>
   v0 = wp.vec3(v[0], v[1], v[2])
   v1 = wp.vec3(v[3], v[4], v[5])
   f0 = wp.vec3(f[0], f[1], f[2])
@@ -160,6 +187,9 @@ def motion_cross_force(v: wp.spatial_vector, f: wp.spatial_vector) -> wp.spatial
 
 @wp.func
 def quat_to_vel(quat: wp.quat) -> wp.vec3:
+  # <md>
+  # $$\boldsymbol{\omega} = \theta\,\hat{\mathbf{n}},\qquad \theta = 2\,\operatorname{atan2}\big(\lVert\mathbf{q}_v\rVert,\, q_w\big),\quad \hat{\mathbf{n}} = \frac{\mathbf{q}_v}{\lVert\mathbf{q}_v\rVert}\quad\text{(quaternion to rotation vector / log map, wrapped to }(-\pi,\pi])$$
+  # </md>
   axis = wp.vec3(quat[1], quat[2], quat[3])
   sin_a_2 = wp.norm_l2(axis)
 
@@ -177,6 +207,9 @@ def quat_to_vel(quat: wp.quat) -> wp.vec3:
 @wp.func
 def quat_sub(qa: wp.quat, qb: wp.quat) -> wp.vec3:
   """Subtract quaternions, express as 3D velocity: qb*quat(res) = qa."""
+  # <md>
+  # $$\Delta\boldsymbol{\theta} = \operatorname{Log}\big(q_b^{-1}\otimes q_a\big)\quad\text{(rotation vector taking }q_b\text{ to }q_a\text{, i.e. }q_b\otimes\exp(\tfrac12\Delta\boldsymbol{\theta}) = q_a)$$
+  # </md>
   # qdif = neg(qb)*qa
   qneg = wp.quat(qb[0], -qb[1], -qb[2], -qb[3])
   qdif = mul_quat(qneg, qa)
@@ -188,6 +221,9 @@ def quat_sub(qa: wp.quat, qb: wp.quat) -> wp.vec3:
 @wp.func
 def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   """Integrates a quaternion given angular velocity and dt."""
+  # <md>
+  # $$q_{t+1} = q_t \otimes \exp\!\big(\tfrac12\,\Delta t\,\boldsymbol{\omega}\big),\qquad \exp(\tfrac12\,\Delta t\,\boldsymbol{\omega}) = \Big(\cos\tfrac{\Delta t\lVert\boldsymbol{\omega}\rVert}{2},\; \tfrac{\boldsymbol{\omega}}{\lVert\boldsymbol{\omega}\rVert}\sin\tfrac{\Delta t\lVert\boldsymbol{\omega}\rVert}{2}\Big)\quad\text{(quaternion integration)}$$
+  # </md>
   norm_ = wp.length(v)
   v = wp.normalize(v)  # does that need proper zero gradient handling?
   angle = dt * norm_
@@ -215,6 +251,9 @@ def orthogonals(a: wp.vec3):
 
 @wp.func
 def orthonormal(normal: wp.vec3) -> wp.vec3:
+  # <md>
+  # $$\mathbf{t} = \frac{\mathbf{e}_k - (\mathbf{e}_k\cdot\mathbf{n})\,\mathbf{n}}{\lVert\cdot\rVert},\quad k = \arg\min_i |n_i|\quad\text{(Gram-Schmidt against the least-aligned axis, yielding }\mathbf{t}\perp\mathbf{n})$$
+  # </md>
   if wp.abs(normal[0]) < wp.abs(normal[1]) and wp.abs(normal[0]) < wp.abs(normal[2]):
     dir = wp.vec3(1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2])
   elif wp.abs(normal[1]) < wp.abs(normal[2]):
@@ -245,6 +284,9 @@ def gjk_normalize(a: wp.vec3):
 
 @wp.func
 def make_frame(a: wp.vec3):
+  # <md>
+  # $$R = \begin{bmatrix} \hat{\mathbf{a}}^{\top} \\ \mathbf{b}^{\top} \\ \mathbf{c}^{\top} \end{bmatrix},\quad \hat{\mathbf{a}} = \tfrac{\mathbf{a}}{\lVert\mathbf{a}\rVert},\;\; \mathbf{b}\perp\hat{\mathbf{a}},\;\; \mathbf{c} = \hat{\mathbf{a}}\times\mathbf{b}\quad\text{(right-handed orthonormal frame with first row }\hat{\mathbf{a}})$$
+  # </md>
   a = wp.normalize(a)
   b, c = orthogonals(a)
 
@@ -268,6 +310,9 @@ def normalize_with_norm(x: Any):
 @wp.func
 def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
   """Returns the closest point on the a-b line segment to a point pt."""
+  # <md>
+  # $$\mathbf{p}^{*} = \mathbf{a} + \operatorname{clamp}\!\Big(\tfrac{(\mathbf{p}-\mathbf{a})\cdot(\mathbf{b}-\mathbf{a})}{\lVert\mathbf{b}-\mathbf{a}\rVert^2},\,0,\,1\Big)\,(\mathbf{b}-\mathbf{a})\quad\text{(point on segment }[\mathbf{a},\mathbf{b}]\text{ nearest }\mathbf{p})$$
+  # </md>
   ab = b - a
   t = wp.dot(pt - a, ab) / (wp.dot(ab, ab) + 1e-6)
   return a + wp.clamp(t, 0.0, 1.0) * ab
@@ -284,6 +329,9 @@ def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> Tuple
 @wp.func
 def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Returns closest points between two line segments."""
+  # <md>
+  # $$(t_a^{*}, t_b^{*}) = \arg\min_{t_a, t_b} \big\lVert (\mathbf{a}_m + t_a\hat{\mathbf{d}}_a) - (\mathbf{b}_m + t_b\hat{\mathbf{d}}_b) \big\rVert^2,\quad t_{a,b}\in[-\tfrac{L}{2}, \tfrac{L}{2}]\quad\text{(closest pair of points between two clamped segments)}$$
+  # </md>
   dir_a, len_a = normalize_with_norm(a1 - a0)
   dir_b, len_b = normalize_with_norm(b1 - b0)
 

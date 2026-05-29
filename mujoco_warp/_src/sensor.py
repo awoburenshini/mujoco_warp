@@ -120,6 +120,9 @@ def _magnetometer(
   objid: int,
 ) -> wp.vec3:
   magnetic = opt_magnetic[worldid % opt_magnetic.shape[0]]
+  # <md>
+  # $$b_{\text{site}} = R_{\text{site}}^{\top}\, b_{\text{world}}\quad\text{(magnetometer: global magnetic flux }b\text{ rotated into the site frame)}$$
+  # </md>
   return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
 
 
@@ -172,6 +175,9 @@ def _cam_projection(
 
   # projection matrix (3 x 4): product of all 4 matrices
   # TODO(team): compute proj directly
+  # <md>
+  # $$P = K_{\text{image}}\, K_{\text{focal}}\, \begin{bmatrix} R_c^{\top} & 0 \\ 0 & 1\end{bmatrix} \begin{bmatrix} I & -x_c \\ 0 & 1\end{bmatrix},\qquad \begin{bmatrix}u\\v\end{bmatrix} = \frac{1}{(Px_{\text{hom}})_z}\,(Px_{\text{hom}})_{xy}\quad\text{(pinhole camera: project world point into pixel coordinates)}$$
+  # </md>
   proj = image @ focal @ rotation @ translation
 
   # projection matrix multiples homogeneous [x, y, z, 1] vectors
@@ -333,6 +339,9 @@ def _frame_pos(
     xpos_ref = wp.vec3(0.0)
     xmat_ref = wp.identity(3, wp.float32)
 
+  # <md>
+  # $$x_{\text{rel}} = R_{\text{ref}}^{\top}\,(x - x_{\text{ref}})\quad\text{(framepos: object position expressed in the reference frame; world frame if }\texttt{refid}=-1\text{)}$$
+  # </md>
   return wp.transpose(xmat_ref) @ (xpos - xpos_ref)
 
 
@@ -441,6 +450,9 @@ def _frame_quat(
   else:  # UNKNOWN
     refquat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
+  # <md>
+  # $$q_{\text{rel}} = q_{\text{ref}}^{-1}\otimes q\quad\text{(framequat: object orientation relative to the reference frame; }q\text{ composed from }\texttt{xquat}\otimes q^{\text{local}}\text{)}$$
+  # </md>
   return math.mul_quat(math.quat_inv(refquat), quat)
 
 
@@ -819,6 +831,9 @@ def sensor_pos(m: Model, d: Data):
       outputs=[sensor_collision],
     )
 
+  # <md>
+  # $$s_i = f_i\big(q,\,x_b(q),\,R_b(q)\big),\qquad i\in\text{position sensors}\quad\text{(jointpos, framepos/framequat, magnetometer, rangefinder, camera projection, etc.; depend on }q\text{ only)}$$
+  # </md>
   wp.launch(
     _sensor_pos,
     dim=(d.nworld, m.sensor_pos_adr.size),
@@ -926,6 +941,9 @@ def _velocimeter(
   lin = wp.spatial_bottom(cvel)
   subtree_com = subtree_com_in[worldid, body_rootid[bodyid]]
   dif = pos - subtree_com
+  # <md>
+  # $$v_{\text{site}} = R_{\text{site}}^{\top}\big(v_b - (x_{\text{site}} - x^{\text{com}})\times\omega_b\big)\quad\text{(velocimeter: shift the body's spatial velocity }(\omega_b, v_b)\text{ from the subtree CoM to the site, then rotate into the site frame)}$$
+  # </md>
   return wp.transpose(rot) @ (lin - wp.cross(dif, ang))
 
 
@@ -944,6 +962,9 @@ def _gyro(
   rot = site_xmat_in[worldid, objid]
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
+  # <md>
+  # $$\omega_{\text{site}} = R_{\text{site}}^{\top}\,\omega_b\quad\text{(gyro: body angular velocity rotated into the site frame; translation-invariant)}$$
+  # </md>
   return wp.transpose(rot) @ ang
 
 
@@ -1142,6 +1163,9 @@ def _frame_linvel(
   clinvel = wp.spatial_bottom(cvel)
   cangvel = wp.spatial_top(cvel)
   cangvelref = wp.spatial_top(cvelref)
+  # <md>
+  # $$v_{\text{obj}} = v_b - (x - x^{\text{com}})\times\omega_b,\qquad v_{\text{rel}} = R_{\text{ref}}^{\top}\big(v_{\text{obj}} - v_{\text{ref}} + (x - x_{\text{ref}})\times\omega_{\text{ref}}\big)\quad\text{(framelinvel: object CoM-velocity shifted to its point, then taken relative to the reference frame)}$$
+  # </md>
   xlinvel = clinvel - wp.cross(offset, cangvel)
 
   if refid > -1:
@@ -1381,6 +1405,9 @@ def sensor_vel(m: Model, d: Data):
   if m.sensor_subtree_vel:
     smooth.subtree_vel(m, d)
 
+  # <md>
+  # $$s_i = f_i\big(q,\,\dot q,\,v_b,\,\omega_b\big),\qquad i\in\text{velocity sensors}\quad\text{(jointvel, velocimeter }v\text{, gyro }\omega\text{, framelinvel/frameangvel, subtree velocity; linear in }\dot q\text{)}$$
+  # </md>
   wp.launch(
     _sensor_vel,
     dim=(d.nworld, m.sensor_vel_adr.size),
@@ -1474,6 +1501,9 @@ def _accelerometer(
   ang = rotT @ cvel_top
   lin = rotT @ (cvel_bottom - wp.cross(dif, cvel_top))
   acc = rotT @ (cacc_bottom - wp.cross(dif, cacc_top))
+  # <md>
+  # $$a_{\text{site}} = R_{\text{site}}^{\top}\big(\dot v_b - (x_{\text{site}}-x^{\text{com}})\times\dot\omega_b\big) + \omega_{\text{site}}\times v_{\text{site}}\quad\text{(accelerometer: site-frame classical acceleration }= \text{rotated spatial acceleration} + \text{centripetal correction }\omega\times v\text{)}$$
+  # </md>
   correction = wp.cross(ang, lin)
   return acc + correction
 
@@ -1492,6 +1522,9 @@ def _force(
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
   site_xmat = site_xmat_in[worldid, objid]
+  # <md>
+  # $$f_{\text{site}} = R_{\text{site}}^{\top}\, f_b\quad\text{(force sensor: linear part of the body interaction wrench }(\tau_b, f_b)\text{ rotated into the site frame)}$$
+  # </md>
   return wp.transpose(site_xmat) @ wp.spatial_bottom(cfrc_int)
 
 
@@ -1513,6 +1546,9 @@ def _torque(
   cfrc_int = cfrc_int_in[worldid, bodyid]
   site_xmat = site_xmat_in[worldid, objid]
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
+  # <md>
+  # $$\tau_{\text{site}} = R_{\text{site}}^{\top}\big(\tau_b - (x_{\text{site}}-x^{\text{com}})\times f_b\big)\quad\text{(torque sensor: interaction torque shifted from the subtree CoM to the site, then rotated into the site frame)}$$
+  # </md>
   return wp.transpose(site_xmat) @ (wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)))
 
 
@@ -1660,6 +1696,9 @@ def _framelinacc(
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
   acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+  # <md>
+  # $$a_{\text{obj}} = \big(\dot v_b - (x-x^{\text{com}})\times\dot\omega_b\big) + \omega\times v_{\text{obj}}\quad\text{(framelinacc: world-frame linear acceleration of the object point, with centripetal correction }\omega\times v\text{)}$$
+  # </md>
   correction = wp.cross(ang, lin)
 
   return acc + correction
@@ -2589,8 +2628,14 @@ def sensor_acc(m: Model, d: Data):
     )
 
   if m.sensor_rne_postconstraint:
+    # <md>
+    # $$\dot v_b,\;f^{\text{int}}_b \;\leftarrow\; \text{RNE}\big(q,\dot q,\ddot q\big) + \text{constraint \& external wrenches}\quad\text{(post-constraint inverse dynamics: body spatial accelerations }\dot v_b\text{ and interaction wrenches }f^{\text{int}}_b\text{ for force/torque/frameacc sensors)}$$
+    # </md>
     smooth.rne_postconstraint(m, d)
 
+  # <md>
+  # $$s_i = f_i\big(\ddot q,\,\dot v_b,\,f^{\text{int}}_b\big),\qquad i\in\text{acceleration sensors}\quad\text{(accelerometer }a=R^{\top}(\dot v + \omega\times v)\text{, force, torque, frameacc, actuatorfrc; depend on }\ddot q\text{)}$$
+  # </md>
   wp.launch(
     _sensor_acc,
     dim=(d.nworld, m.sensor_acc_adr.size),
@@ -2718,6 +2763,9 @@ def _energy_pos_gravity(
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
   bodyid += 1  # skip world body
 
+  # <md>
+  # $$E_{\text{pot}} \mathrel{-}= m_b\,(g\cdot x_b)\quad\Longrightarrow\quad E_{\text{pot}}^{\text{grav}} = -\sum_b m_b\,g\cdot x_b\quad\text{(gravitational potential energy summed over bodies via atomic subtract)}$$
+  # </md>
   energy = wp.vec2(
     body_mass[worldid % body_mass.shape[0], bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
     0.0,
@@ -2805,6 +2853,9 @@ def _energy_pos_passive_joint(
     wp.atomic_add(energy_out, worldid, energy)
   elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
     dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
+    # <md>
+    # $$E_{\text{pot}} \mathrel{+}= \tfrac12\, k\,(q - q_{\text{spring}})^2\quad\text{(joint spring potential; free/ball joints use the analogous }\tfrac12 k\,\lVert\Delta\rVert^2\text{ with quaternion difference for the rotational part)}$$
+    # </md>
     energy = wp.vec2(
       0.5 * stiffness * dif_ * dif_,
       0.0,
@@ -2855,6 +2906,9 @@ def energy_pos(m: Model, d: Data):
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not (m.opt.disableflags & DisableBit.GRAVITY):
+    # <md>
+    # $$E_{\text{pot}} = -\sum_b m_b\,g\cdot x_b \;+\; \sum \tfrac12 k\,\Delta q^2\quad\text{(total potential energy: gravity over bodies plus joint/tendon spring terms accumulated below)}$$
+    # </md>
     wp.launch(
       _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
     )
@@ -2909,6 +2963,9 @@ def _energy_vel_kinetic(nv: int):
     qvelMqvel_tile = wp.tile_map(wp.mul, qvel_tile, Mqvel_tile)
 
     # sum(qvel * (M @ qvel))
+    # <md>
+    # $$E_{\text{kin}} = \tfrac12\,\dot q^{\top} M(q)\,\dot q = \tfrac12\sum_i \dot q_i\,(M\dot q)_i\quad\text{(kinetic energy; tile reduction of the elementwise product }\dot q\odot(M\dot q)\text{)}$$
+    # </md>
     quadratic_tile = wp.tile_reduce(wp.add, qvelMqvel_tile)
 
     energy_out[worldid][1] = 0.5 * quadratic_tile[0]
@@ -2921,6 +2978,9 @@ def energy_vel(m: Model, d: Data):
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
+  # <md>
+  # $$\texttt{mv} = M(q)\,\dot q\quad\text{(mass-matrix times velocity; reused below to form the kinetic energy }\tfrac12\dot q^{\top} M\dot q\text{)}$$
+  # </md>
   mv = wp.zeros((d.nworld, m.nv), dtype=float)
   support.mul_m(m, d, mv, d.qvel)
 

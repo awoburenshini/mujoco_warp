@@ -101,6 +101,9 @@ def geom_collision_pair(
   geom1.rot = geom_xmat_in[worldid, g1]
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
+  # <md>
+  # $$n = R\,e_z = R_{\cdot,2}\in\mathbb{R}^3,\qquad \lVert n\rVert = 1\quad\text{(plane/geom outward normal is the local }z\text{-axis in world frame)}$$
+  # </md>
   geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])
 
   geom2.pos = geom_xpos_in[worldid, g2]
@@ -196,6 +199,9 @@ def write_contact(
 
   Returns 1 if the contact is active (dist < margin), 0 otherwise.
   """
+  # <md>
+  # $$\text{active} \;\Longleftrightarrow\; d < \text{margin}\qquad(d=\text{signed distance};\;d<0\Leftrightarrow\text{penetration }\phi=d)$$
+  # </md>
   active = dist_in < margin_in
 
   # skip contact and no collision sensor
@@ -212,11 +218,17 @@ def write_contact(
 
   cid = wp.atomic_add(nacon_out, 0, 1)
   if cid < naconmax_in:
+    # <md>
+    # $$c = (p,\,n,\,d)\;\hookrightarrow\;\text{contact array},\qquad \text{frame}=[\,n\;|\;t_1\;|\;t_2\,]\in SO(3)\quad(\texttt{frame\_in}\text{ rows: normal then tangents})$$
+    # </md>
     contact_dist_out[cid] = dist_in
     contact_pos_out[cid] = pos_in
     contact_frame_out[cid] = frame_in
     contact_geom_out[cid] = geoms_in
     contact_worldid_out[cid] = worldid_in
+    # <md>
+    # $$\texttt{includemargin} = \text{margin} - \text{gap}\qquad(\text{contact generates a constraint when }d < \text{margin}-\text{gap})$$
+    # </md>
     includemargin = margin_in - gap_in
     contact_includemargin_out[cid] = includemargin
     contact_dim_out[cid] = condim_in
@@ -304,6 +316,9 @@ def contact_params(
       condim = condim2
       max_geom_friction = geom_friction[friction_id, g2]
     else:
+      # <md>
+      # $$\text{mix} = \frac{\text{solmix}_1}{\text{solmix}_1 + \text{solmix}_2}\qquad\text{param} = \text{mix}\cdot\text{param}_1 + (1-\text{mix})\,\text{param}_2\quad\text{(equal-priority blend)}$$
+      # </md>
       mix = safe_div(solmix1, solmix1 + solmix2)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)

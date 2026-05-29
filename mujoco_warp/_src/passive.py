@@ -108,6 +108,9 @@ def _spring_damper_dof_passive(
   if jnttype == JointType.FREE:
     # spring
     if has_stiffness:
+      # <md>
+      # $$\tau_{\text{spring}}^{\text{trans}} = -k\,(x - x_{\text{ref}}),\qquad \tau_{\text{spring}}^{\text{rot}} = -k\,\log\!\big(q_{\text{ref}}^{-1} q\big)^{\vee}\quad\text{(free joint: linear Hooke restoring force plus quaternion-error rotational spring)}$$
+      # </md>
       dif = wp.vec3(
         qpos_in[worldid, qposid + 0] - qpos_spring[qpos_spring_id, qposid + 0],
         qpos_in[worldid, qposid + 1] - qpos_spring[qpos_spring_id, qposid + 1],
@@ -136,6 +139,9 @@ def _spring_damper_dof_passive(
 
     # damper
     if has_damping:
+      # <md>
+      # $$\tau_{\text{damper}} = -b\,\dot q\quad\text{(viscous damping, applied to all 6 DOFs of the free joint)}$$
+      # </md>
       qfrc_damper_out[worldid, dofid + 0] = -damping * qvel_in[worldid, dofid + 0]
       qfrc_damper_out[worldid, dofid + 1] = -damping * qvel_in[worldid, dofid + 1]
       qfrc_damper_out[worldid, dofid + 2] = -damping * qvel_in[worldid, dofid + 2]
@@ -145,6 +151,9 @@ def _spring_damper_dof_passive(
   elif jnttype == JointType.BALL:
     # spring
     if has_stiffness:
+      # <md>
+      # $$\tau_{\text{spring}} = -k\,\log\!\big(q_{\text{ref}}^{-1} q\big)^{\vee}\quad\text{(ball joint: rotational spring on the quaternion orientation error)}$$
+      # </md>
       rot = wp.quat(
         qpos_in[worldid, qposid + 0],
         qpos_in[worldid, qposid + 1],
@@ -171,6 +180,9 @@ def _spring_damper_dof_passive(
   else:  # mjJNT_SLIDE, mjJNT_HINGE
     # spring
     if has_stiffness:
+      # <md>
+      # $$\tau_{\text{spring}} = -k\,(q - q_{\text{ref}}),\qquad \tau_{\text{damper}} = -b\,\dot q\quad\text{(scalar slide/hinge joint: Hooke spring about }q_{\text{ref}}\text{ plus viscous damper)}$$
+      # </md>
       fdif = qpos_in[worldid, qposid] - qpos_spring[qpos_spring_id, qposid]
       qfrc_spring_out[worldid, dofid] = -stiffness * fdif
 
@@ -219,6 +231,9 @@ def _spring_damper_tendon_passive(
   dofid = ten_J_colind[sparseid]
 
   if has_stiffness:
+    # <md>
+    # $$f_{\text{spring}} = \begin{cases} k\,(L_{\max}-L) & L > L_{\max} \\ k\,(L_{\min}-L) & L < L_{\min} \\ 0 & \text{otherwise}\end{cases}\quad\text{(scalar tendon spring with a deadband }[L_{\min},L_{\max}]\text{)}$$
+    # </md>
     # compute spring force along tendon
     length = ten_length_in[worldid, tenid]
     lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
@@ -232,10 +247,16 @@ def _spring_damper_tendon_passive(
     else:
       frc_spring = 0.0
 
+    # <md>
+    # $$\tau \mathrel{+}= J^{\top} f_{\text{spring}},\qquad J = \frac{\partial L}{\partial q}\quad\text{(map scalar tendon force to generalized force via the tendon Jacobian)}$$
+    # </md>
     # transform to joint torque
     wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
 
   if has_damping:
+    # <md>
+    # $$f_{\text{damper}} = -b\,\dot L,\qquad \tau \mathrel{+}= J^{\top} f_{\text{damper}}\quad\text{(viscous tendon damping; }\dot L\text{ is tendon velocity, mapped through }J=\partial L/\partial q\text{)}$$
+    # </md>
     # compute damper linear force along tendon
     frc_damper = -damping * ten_velocity_in[worldid, tenid]
 
@@ -265,6 +286,9 @@ def _gravity_force(
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
   if gravcomp:
+    # <md>
+    # $$f_b = -c_b\, m_b\, g,\qquad \tau \mathrel{+}= J_b(x^{I}_b)^{\top} f_b\quad\text{(gravity compensation: apply }-c_b m_b g\text{ at each body CoM and project to generalized force via the translational Jacobian)}$$
+    # </md>
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
     pos = xipos_in[worldid, bodyid]
     jac, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
@@ -315,6 +339,9 @@ def _fluid_force(
   density = opt_density[worldid % opt_density.shape[0]]
   viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
 
+  # <md>
+  # $$\omega = {}^{c}\!\omega_b,\qquad v_{\text{CoM}} = {}^{c}v_b - (x^{I}_b - x_{\text{root}})\times\omega\quad\text{(shift the body's spatial velocity from the subtree-CoM reference point to the body inertial CoM)}$$
+  # </md>
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
   rot = ximat_in[worldid, bodyid]
@@ -356,6 +383,9 @@ def _fluid_force(
       lfrc_force = wp.vec3(0.0)
 
       if density > 0.0:
+        # <md>
+        # $$p = \rho\, m_v \odot v,\quad h = \rho\, I_v \odot \omega,\qquad F_{\text{add}} = p\times\omega,\quad T_{\text{add}} = p\times v + h\times\omega\quad\text{(ideal-fluid added-mass reaction from the displaced-fluid momentum)}$$
+        # </md>
         # added-mass forces and torques
         virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
         virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
@@ -384,6 +414,9 @@ def _fluid_force(
       slender_drag_coef = geom_fluid[geomid, 2]
       ang_drag_coef = geom_fluid[geomid, 3]
 
+      # <md>
+      # $$F_{\text{Magnus}} = C_M\,\rho\, V\,(\omega\times v)\quad\text{(Magnus lift, }V=\tfrac{4}{3}\pi a b c\text{ the ellipsoid volume)}$$
+      # </md>
       volume = wp.static(4.0 / 3.0 * wp.pi) * semiaxes[0] * semiaxes[1] * semiaxes[2]
       d_max = wp.max(wp.max(semiaxes[0], semiaxes[1]), semiaxes[2])
       d_min = wp.min(wp.min(semiaxes[0], semiaxes[1]), semiaxes[2])
@@ -414,6 +447,9 @@ def _fluid_force(
         _pow2(s01) * l_lin[2],
       )
 
+      # <md>
+      # $$\Gamma = C_K\,\rho\,\cos\alpha\, A_{\text{proj}}\,(n\times v),\qquad F_{\text{Kutta}} = \Gamma\times v\quad\text{(Kutta-Joukowski lift orthogonal to the flow; }\alpha\text{ is the angle of attack, }A_{\text{proj}}\text{ the projected area)}$$
+      # </md>
       kutta_force = wp.vec3(0.0)
       if density > 0.0 and kutta_coef != 0.0 and lin_speed > MJ_MINVAL:
         kutta_circ = wp.cross(norm, l_lin) * (kutta_coef * density * cos_alpha * A_proj)
@@ -434,6 +470,9 @@ def _fluid_force(
         l_ang[2] * (ang_drag_coef * II2 + slender_drag_coef * (I_max - II2)),
       )
 
+      # <md>
+      # $$F_{\text{drag}} = -\big[\,\mu\,c_{\text{lin}} + \rho\,\lVert v\rVert\,(C_{Db} A_{\text{proj}} + C_{Ds}(A_{\max}-A_{\text{proj}}))\,\big]\,v,\qquad T_{\text{drag}} = -\big[\,\mu\,c_{\text{ang}} + \rho\,\lVert m_v\rVert\,\big]\,\omega\quad\text{(viscous + quadratic drag, blunt and slender contributions)}$$
+      # </md>
       drag_lin_coef = viscosity * lin_visc_force_coef + density * lin_speed * (
         A_proj * blunt_drag_coef + slender_drag_coef * (A_max - A_proj)
       )
@@ -465,6 +504,9 @@ def _fluid_force(
   has_density = density > 0.0
 
   if has_viscosity or has_density:
+    # <md>
+    # $$s_x = \sqrt{\tfrac{6}{m}\,(I_y + I_z - I_x)}\quad\text{(and cyclic): equivalent inertia-box side lengths from the body's diagonal inertia and mass)}$$
+    # </md>
     inertia = body_inertia[worldid % body_inertia.shape[0], bodyid]
     mass = body_mass[worldid % body_mass.shape[0], bodyid]
     scl = 6.0 / mass
@@ -473,11 +515,17 @@ def _fluid_force(
     box2 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[1] - inertia[2]) * scl)
 
   if has_viscosity:
+    # <md>
+    # $$F_{\text{visc}} = -3\pi\,\mu\, d\, v,\qquad T_{\text{visc}} = -\pi\,\mu\, d^{3}\,\omega\quad\text{(Stokes drag on an equivalent sphere of diameter }d=\tfrac{1}{3}(s_x+s_y+s_z)\text{)}$$
+    # </md>
     diam = (box0 + box1 + box2) / 3.0
     lfrc_torque = -l_ang * wp.pow(diam, 3.0) * wp.pi * viscosity
     lfrc_force = -3.0 * l_lin * diam * wp.pi * viscosity
 
   if has_density:
+    # <md>
+    # $$F_i = -\tfrac12\,\rho\, A_i\, |v_i|\,v_i\quad\text{(quadratic form drag per box face, }A_i\text{ the face area normal to axis }i\text{; torque uses the analogous fourth-power moments)}$$
+    # </md>
     lfrc_force -= wp.vec3(
       0.5 * density * box1 * box2 * wp.abs(l_lin[0]) * l_lin[0],
       0.5 * density * box0 * box2 * wp.abs(l_lin[1]) * l_lin[1],
@@ -529,6 +577,9 @@ def _fluid(m: Model, d: Data):
     outputs=[fluid_applied],
   )
 
+  # <md>
+  # $$\tau_{\text{fluid}} = \sum_b J_b^{\top}\begin{bmatrix} f_b \\ \tau_b \end{bmatrix}\quad\text{(project the per-body Cartesian fluid wrench to generalized forces via the body Jacobians)}$$
+  # </md>
   support.apply_ft(m, d, fluid_applied, d.qfrc_fluid, False)
 
 
@@ -548,6 +599,9 @@ def _qfrc_passive(
   # Data out:
   qfrc_passive_out: wp.array2d[float],
 ):
+  # <md>
+  # $$\texttt{qfrc\_passive} = \tau_{\text{spring}} + \tau_{\text{damper}} + \tau_{\text{gravcomp}} + \tau_{\text{fluid}}\quad\text{(sum all passive generalized forces; gravity compensation is skipped on DOFs whose joint hands it to the actuators)}$$
+  # </md>
   worldid, dofid = wp.tid()
   qfrc_passive = qfrc_spring_in[worldid, dofid]
   qfrc_passive += qfrc_damper_in[worldid, dofid]
@@ -630,6 +684,9 @@ def _flex_elasticity(
       gradient[e, 0 + i] = xpos0[i] - xpos1[i]
       gradient[e, 3 + i] = xpos1[i] - xpos0[i]
 
+  # <md>
+  # $$\varepsilon_e = \big(\ell_e^2 - \ell_{e,0}^2\big) + \big(\ell_e^2 - \ell_{e,\text{prev}}^2\big)\,k_D,\qquad k_D = \tfrac{d}{\Delta t}\quad\text{(per-edge squared-length strain plus a Rayleigh-damping term using the previous-step length)}$$
+  # </md>
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
     idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e]
@@ -647,6 +704,9 @@ def _flex_elasticity(
       metric[ed2, ed1] = flex_stiffness[elemid, id]
       id += 1
 
+  # <md>
+  # $$f_v = -\sum_{e_1,e_2} \varepsilon_{e_1}\, K_{e_1 e_2}\, \frac{\partial \ell_{e_2}}{\partial x_v}\quad\text{(elastic nodal force: stiffness metric }K\text{ contracted with edge strains and edge-length gradients)}$$
+  # </md>
   force = wp.matrix(0.0, shape=(6, 3))
   for ed1 in range(nedge):
     for ed2 in range(nedge):
@@ -712,6 +772,9 @@ def _flex_bending(
     frc[3] = wp.cross(v1 - v0, v2 - v0)
     frc[0] = -(frc[1] + frc[2] + frc[3])
 
+  # <md>
+  # $$f_i = -\sum_{j} B_{ij}\, x_j\quad\text{(bending force on the 4 vertices of an edge flap from the quadratic bending stiffness matrix }B\text{; extra term for the nonlinear normal-area contribution)}$$
+  # </md>
   force = wp.matrix(0.0, shape=(nvert, 3))
   for i in range(nvert):
     for x in range(3):

@@ -49,6 +49,9 @@ def _compute_box_bounds(
   min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
   max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
 
+  # <md>
+  # $$c_{ijk} = p + R\,\bigl(s \odot (2[i,j,k]^{\top}-1)\bigr),\qquad (i,j,k)\in\{0,1\}^3\quad\text{(8 oriented-box corners in world frame)}$$
+  # </md>
   for i in range(2):
     for j in range(2):
       for k in range(2):
@@ -58,6 +61,9 @@ def _compute_box_bounds(
           size[2] * (2.0 * float(k) - 1.0),
         )
         world_corner = pos + rot @ local_corner
+        # <md>
+        # $$\text{lo} \leftarrow \min(\text{lo},\, c_{ijk}),\qquad \text{hi} \leftarrow \max(\text{hi},\, c_{ijk})\quad\text{(component-wise AABB }[\text{lo},\text{hi}]\text{ accumulation)}$$
+        # </md>
         min_bound = wp.min(min_bound, world_corner)
         max_bound = wp.max(max_bound, world_corner)
 
@@ -72,6 +78,9 @@ def _compute_sphere_bounds(
   size: wp.vec3,
 ) -> Tuple[wp.vec3, wp.vec3]:
   radius = size[0]
+  # <md>
+  # $$[\text{lo},\,\text{hi}] = [\,p - r\mathbf{1},\; p + r\mathbf{1}\,]\quad\text{(sphere AABB, rotation-invariant)}$$
+  # </md>
   return pos - wp.vec3(radius, radius, radius), pos + wp.vec3(radius, radius, radius)
 
 
@@ -85,12 +94,18 @@ def _compute_capsule_bounds(
   radius = size[0]
   half_length = size[1]
   z = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+  # <md>
+  # $$e_{1,2} = p \mp h\,\hat{z},\qquad \hat{z}=R_{:,2}\quad\text{(capsule segment endpoints; }h\text{ is half-length)}$$
+  # </md>
   world_end1 = pos - z * half_length
   world_end2 = pos + z * half_length
 
   seg_min = wp.min(world_end1, world_end2)
   seg_max = wp.max(world_end1, world_end2)
 
+  # <md>
+  # $$[\text{lo},\,\text{hi}] = \bigl[\,\min(e_1,e_2)-r\mathbf{1},\; \max(e_1,e_2)+r\mathbf{1}\,\bigr]\quad\text{(segment AABB inflated by radius }r\text{)}$$
+  # </md>
   inflate = wp.vec3(radius, radius, radius)
   return seg_min - inflate, seg_max + inflate
 
@@ -134,6 +149,9 @@ def _compute_ellipsoid_bounds(
   size: wp.vec3,
 ) -> Tuple[wp.vec3, wp.vec3]:
   # Half-extent along each world axis equals the norm of the corresponding row of rot*diag(size)
+  # <md>
+  # $$\text{ext}_a = \bigl\lVert \bigl(R\,\operatorname{diag}(s)\bigr)_{a,:} \bigr\rVert_2,\qquad [\text{lo},\text{hi}]=[\,p-\text{ext},\;p+\text{ext}\,]\quad\text{(ellipsoid AABB half-extent per axis }a\text{)}$$
+  # </md>
   row0 = wp.vec3(rot[0, 0] * size[0], rot[0, 1] * size[1], rot[0, 2] * size[2])
   row1 = wp.vec3(rot[1, 0] * size[0], rot[1, 1] * size[1], rot[1, 2] * size[2])
   row2 = wp.vec3(rot[2, 0] * size[0], rot[2, 1] * size[1], rot[2, 2] * size[2])
@@ -157,10 +175,16 @@ def _compute_cylinder_bounds(
   basis_x = wp.vec3(rot[0, 0], rot[1, 0], rot[2, 0])
   basis_y = wp.vec3(rot[0, 1], rot[1, 1], rot[2, 1])
 
+  # <md>
+  # $$\text{radial}_a = r\sqrt{(R_{a,0})^2 + (R_{a,1})^2}\quad\text{(projection of the circular cap of radius }r\text{ onto world axis }a\text{)}$$
+  # </md>
   radial_x = radius * wp.sqrt(basis_x[0] * basis_x[0] + basis_y[0] * basis_y[0])
   radial_y = radius * wp.sqrt(basis_x[1] * basis_x[1] + basis_y[1] * basis_y[1])
   radial_z = radius * wp.sqrt(basis_x[2] * basis_x[2] + basis_y[2] * basis_y[2])
 
+  # <md>
+  # $$\text{ext}_a = \text{radial}_a + h\,\lvert \hat{z}_a \rvert,\qquad [\text{lo},\text{hi}]=[\,p-\text{ext},\;p+\text{ext}\,]\quad\text{(cylinder AABB: radial cap }+\text{ axial half-height }h\text{)}$$
+  # </md>
   extent = wp.vec3(
     radial_x + half_height * axis_abs[0],
     radial_y + half_height * axis_abs[1],
@@ -277,6 +301,9 @@ def _compute_flex_bvh_bounds(
     vert_adr = flex_vertadr[flex_id]
     v0 = flexvert_xpos_in[worldid, vert_adr + edge[0]]
     v1 = flexvert_xpos_in[worldid, vert_adr + edge[1]]
+    # <md>
+    # $$[\text{lo},\,\text{hi}] = \bigl[\,\min(v_0,v_1)-r\mathbf{1},\; \max(v_0,v_1)+r\mathbf{1}\,\bigr]\quad\text{(1D flex edge AABB inflated by flex radius }r\text{)}$$
+    # </md>
     lower_out[out_idx] = wp.min(v0, v1) - inflate
     upper_out[out_idx] = wp.max(v0, v1) + inflate
   else:  # mesh (2D/3D)
@@ -284,6 +311,9 @@ def _compute_flex_bvh_bounds(
     nvert = flex_vertnum[flex_id]
     min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
+    # <md>
+    # $$\text{lo} = \min_{i} v_i,\qquad \text{hi} = \max_{i} v_i\quad\text{(AABB enclosing all flex vertices }v_i\text{, component-wise)}$$
+    # </md>
     for i in range(nvert):
       v = flexvert_xpos_in[worldid, vert_adr + i]
       min_bound = wp.min(min_bound, v)
@@ -422,6 +452,9 @@ def build_mesh_bvh(
   f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
   indices = mjm.mesh_face[f_start:f_end]
   indices = indices.flatten()
+  # <md>
+  # $$\text{half} = \tfrac{1}{2}\bigl(\max_i p_i - \min_i p_i\bigr)\quad\text{(half-extent of the mesh AABB }[\min_i p_i,\,\max_i p_i]\text{)}$$
+  # </md>
   pmin = np.min(points, axis=0)
   pmax = np.max(points, axis=0)
   half = 0.5 * (pmax - pmin)
@@ -480,6 +513,9 @@ def _optimize_hfield_mesh(
       z11 = data[r + 1, c + 1]
 
       # Approx check for planarity: z00 + z11 == z01 + z10
+      # <md>
+      # $$\bigl\lvert (z_{00}+z_{11}) - (z_{01}+z_{10}) \bigr\rvert < \varepsilon\quad\text{(bilinear cell is planar iff diagonal sums match, }\varepsilon=10^{-5}\text{)}$$
+      # </md>
       is_planar = abs((z00 + z11) - (z01 + z10)) < 1e-5
 
       if not is_planar:
@@ -515,6 +551,9 @@ def _optimize_hfield_mesh(
 
         # Check if it lies on the SAME plane as start cell
         # Expected z at (rr, cc)
+        # <md>
+        # $$\hat{z}(r',c') = z_{00} + (r'-r)\,m_y + (c'-c)\,m_x\quad\text{(plane prediction; }m_x,m_y\text{ are the start-cell slopes)}$$
+        # </md>
         z_pred = z00 + (rr - r) * slope_y + (cc - c) * slope_x
         if abs(cz00 - z_pred) >= 1e-5:
           return False
@@ -644,6 +683,9 @@ def accumulate_flex_vertex_normals(
   v1 = flexvert_xpos_in[worldid, i1]
   v2 = flexvert_xpos_in[worldid, i2]
 
+  # <md>
+  # $$\hat{n}_f = \frac{(v_1-v_0)\times(v_2-v_0)}{\lVert (v_1-v_0)\times(v_2-v_0) \rVert}\quad\text{(triangle face normal; accumulated into incident vertices)}$$
+  # </md>
   face_nrm = wp.cross(v1 - v0, v2 - v0)
   face_nrm = wp.normalize(face_nrm)
   flexvert_norm_out[worldid, i0] += face_nrm
@@ -698,6 +740,9 @@ def _build_flex_2d_elements(
   n1 = flexvert_norm_in[worldid, i1]
   n2 = flexvert_norm_in[worldid, i2]
 
+  # <md>
+  # $$p^{\pm}_k = v_k \pm r\,\hat{n}_k\quad\text{(extrude 2D flex triangle to a top/bottom shell of thickness }2r\text{ along vertex normals)}$$
+  # </md>
   p0_pos = v0 + radius * n0
   p1_pos = v1 + radius * n1
   p2_pos = v2 + radius * n2

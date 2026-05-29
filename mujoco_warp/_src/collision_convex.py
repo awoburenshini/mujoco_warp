@@ -91,12 +91,18 @@ def _hfield_filter(
   mat1 = geom_xmat_in[worldid, g1]
   mat1T = wp.transpose(mat1)
   pos2 = geom_xpos_in[worldid, g2]
+  # <md>
+  # $$p^{(1)} = R_1^{\top}\,(x_2 - x_1)\quad\text{(geom 2 center expressed in the heightfield local frame)}$$
+  # </md>
   pos = mat1T @ (pos2 - pos1)
   r2 = geom_rbound[rbound_id, g2]
 
   # TODO(team): margin?
   margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
 
+  # <md>
+  # $$\big[\,p^{(1)}_i - r_2 - \text{margin},\; p^{(1)}_i + r_2 + \text{margin}\,\big]\;\cap\;[-s^{(1)}_i,\,s^{(1)}_i]=\varnothing\;\Longrightarrow\;\text{no collision}\quad\text{(bounding-sphere vs. AABB reject)}$$
+  # </md>
   # box-sphere test: horizontal plane
   for i in range(2):
     if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
@@ -131,6 +137,14 @@ def _hfield_filter(
     geom2.vert = mesh_vert
     geom2.graph = mesh_graph
 
+  # <md>
+  # Support function of a convex set $A$ along direction $d$:
+  # $$S_A(d) = \arg\max_{x\in A}\; d\cdot x\quad\text{(farthest point of }A\text{ in direction }d)$$
+  # Querying the six axis-aligned directions $\pm e_x,\pm e_y,\pm e_z$ yields a tight AABB of geom 2 in
+  # the heightfield frame:
+  # $$[\,x_{\min},x_{\max}\,]\times[\,y_{\min},y_{\max}\,]\times[\,z_{\min},z_{\max}\,],\qquad
+  #   x_{\max}=\big(S_A(+e_x)\big)_x,\;\; x_{\min}=\big(S_A(-e_x)\big)_x,\;\dots$$
+  # </md>
   # use support functions for tight AABB bounds
   xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
   xmin = support(geom2, geomtype2, wp.vec3(-1.0, 0.0, 0.0)).point[0]
@@ -139,6 +153,12 @@ def _hfield_filter(
   zmax = support(geom2, geomtype2, wp.vec3(0.0, 0.0, 1.0)).point[2]
   zmin = support(geom2, geomtype2, wp.vec3(0.0, 0.0, -1.0)).point[2]
 
+  # <md>
+  # Tight-AABB vs. heightfield-bounding-box separating-axis test: the pair is disjoint iff the
+  # intervals fail to overlap on any of the three coordinate axes.
+  # $$\exists\,k\in\{x,y,z\}:\;\; k_{\min}-\text{margin} > s^{(1)}_k \;\;\lor\;\; k_{\max}+\text{margin} < -s^{(1)}_k
+  #   \;\Longrightarrow\;\text{no collision}$$
+  # </md>
   # box-box test
   if (
     (xmin - margin > size1[0])
@@ -439,9 +459,19 @@ def ccd_hfield_kernel_builder(
 
           geom1.hfprism = prism
 
+          # <md>
+          # $$x_1 = x^{(1)} + R_1\,\frac{1}{6}\sum_{k=0}^{5} v_k\quad\text{(centroid of the 6 prism vertices, world frame; GJK warm-start)}$$
+          # </md>
           # prism center
           x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
 
+          # <md>
+          # Convex collision via GJK (distance / separation) and, on overlap, EPA (penetration depth and normal)
+          # on the Minkowski difference $A\ominus B = \{a-b:\,a\in A,\,b\in B\}$:
+          # $$\phi = \min_{x\in A\ominus B}\lVert x\rVert\;\;(\text{disjoint}),\qquad
+          #   \phi = -\max_{\lVert n\rVert=1}\;\big(\text{depth along }n\text{ s.t. }A\ominus B\text{ separated}\big)\;\;(\text{overlap})$$
+          # Returns signed distance $\phi$, witness points $w_1\in A,\,w_2\in B$, and the contact count.
+          # </md>
           dist, ncontact, w1, w2, idx = ccd(
             opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
             0.0,
@@ -467,6 +497,9 @@ def ccd_hfield_kernel_builder(
           # cache contact information
           hfield_contact_dist[count] = dist
 
+          # <md>
+          # $$p_{\text{local}} = \tfrac{1}{2}(w_1 + w_2),\qquad p = R_1\,p_{\text{local}} + x^{(1)}\quad\text{(contact point = witness midpoint, back to world)}$$
+          # </md>
           # transform contact to global frame
           pos_local = 0.5 * (w1 + w2)
           pos = hf_mat @ pos_local + hf_pos
@@ -474,6 +507,9 @@ def ccd_hfield_kernel_builder(
           hfield_contact_pos[count, 1] = pos[1]
           hfield_contact_pos[count, 2] = pos[2]
 
+          # <md>
+          # $$n = R_1\,\frac{w_1 - w_2}{\lVert w_1 - w_2\rVert}\quad\text{(contact normal points from geom 2 toward geom 1; first row of the contact frame)}$$
+          # </md>
           frame_local = make_frame(w1 - w2)
           normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
           normal = hf_mat @ normal_local
@@ -490,6 +526,11 @@ def ccd_hfield_kernel_builder(
 
           count += 1
 
+    # <md>
+    # Reduce the per-prism contacts to a stable 4-point manifold spanning the contact patch. Contact 0 is the
+    # deepest (most negative $\phi$):
+    # $$k_0 = \arg\min_k \phi_k$$
+    # </md>
     # contact 0: minimum distance
     write_contact(
       naconmax_in,
@@ -528,6 +569,9 @@ def ccd_hfield_kernel_builder(
     if wp.static(True):
       MIN_DIST_TO_NEXT_CONTACT = 1.0e-3
 
+      # <md>
+      # $$k_1 = \arg\max_{k\neq k_0}\;\lVert p_k - p_{k_0}\rVert\quad\text{(point farthest from contact 0)}$$
+      # </md>
       # contact 1: furthest from minimum distance contact
       id1 = int(-1)
       dist1 = float(-MJ_MAXVAL)
@@ -581,6 +625,11 @@ def ccd_hfield_kernel_builder(
         nacon_out,
       )
 
+      # <md>
+      # In-plane edge direction $a = n\times(p_{k_0}-p_{k_1})$; contact 2 maximizes signed distance off the
+      # $p_{k_0}\!-\!p_{k_1}$ line so the three points span maximal area:
+      # $$k_2 = \arg\max_{k\neq k_0,k_1}\;\big|\,(p_k - p_{k_0})\cdot a\,\big|$$
+      # </md>
       # contact 2: point furthest from min_pos - pos1 line
       dist_min1 = wp.cross(min_normal, min_pos - pos1)
 
@@ -636,6 +685,11 @@ def ccd_hfield_kernel_builder(
         nacon_out,
       )
 
+      # <md>
+      # Contact 3 maximizes total off-edge distance from the two remaining triangle edges
+      # $b = n\times(p_{k_0}-p_{k_2})$ and $c = n\times(p_{k_1}-p_{k_2})$, completing the quadrilateral manifold:
+      # $$k_3 = \arg\max_{k\neq k_0,k_1,k_2}\;\big(\,\big|(p_k - p_{k_0})\cdot b\big| + \big|(p_{k_1} - p_k)\cdot c\big|\,\big)$$
+      # </md>
       # contact 3: point furthest from other triangle edge
       vec_min2 = wp.cross(min_normal, min_pos - pos2)
       vec_12 = wp.cross(min_normal, pos1 - pos2)
@@ -771,6 +825,14 @@ def ccd_kernel_builder(
       cutoff = 1.0e32
     else:
       cutoff = 0.0
+    # <md>
+    # Convex-convex narrowphase on the Minkowski difference $A\ominus B$: GJK finds the separation
+    # (signed distance $\phi$) and, when the shapes overlap, EPA expands a polytope to recover the minimum
+    # penetration depth and its normal $n$.
+    # $$\phi = \min_{x\in A\ominus B}\lVert x\rVert\;\;(\phi\ge 0),\qquad
+    #   -\phi = \min_{x\in\partial(A\ominus B)}\lVert x\rVert\;\;(\text{overlap, EPA})$$
+    # Outputs witness points $w_1\in A,\,w_2\in B$ and \texttt{multiccd\_idx} (the EPA face seeding the manifold).
+    # </md>
     dist, ncollision, w1, w2, multiccd_idx = ccd(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
@@ -798,11 +860,20 @@ def ccd_kernel_builder(
     # geometry.  Correct back to the true surface-to-surface distance so that
     # the constraint pipeline (pos = dist - includemargin) works consistently
     # with the primitive narrowphase, which reports un-inflated distances.
+    # <md>
+    # $$\phi \leftarrow \phi + \text{margin}\quad\text{(undo the }0.5\,\text{margin}\text{ inflation applied to each support; recover true surface gap)}$$
+    # </md>
     dist += margin
 
     witness1[0] = w1
     witness2[0] = w2
 
+    # <md>
+    # Single-point GJK/EPA witness ($w_1,w_2$) is sufficient for vertex/edge contacts, but face-face contacts
+    # (e.g. box-on-box) need a full contact manifold. Enable manifold generation when \texttt{use\_multiccd} is
+    # set or for the BOX-BOX pair, where the separating axis is one of the box face/edge normals (SAT family).
+    # $$\text{manifold} \iff \texttt{use\_multiccd} \;\lor\; (\text{type}_1,\text{type}_2)=(\text{BOX},\text{BOX})$$
+    # </md>
     if wp.static(use_multiccd or (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)):
       if wp.static(geomtype1 == GeomType.MESH):
         # verify that geom1 mesh data is present for multicontact
@@ -814,6 +885,14 @@ def ccd_kernel_builder(
         if geom2.mesh_polyadr < 0:
           multiccd_idx = -1
 
+      # <md>
+      # Multi-contact manifold generation by polygon clipping. Pick the incident faces $F_1\subset\partial A$,
+      # $F_2\subset\partial B$ whose outward normals best align with the contact normal $n$ (most anti-parallel),
+      # then Sutherland-Hodgman clip the incident polygon against the side planes of the reference polygon:
+      # $$F^\star = \arg\max_{\text{face }F}\;|\,n_F\cdot n\,|,\qquad
+      #   \text{manifold} = \text{clip}\big(F_{\text{inc}};\,\{\text{side planes of }F_{\text{ref}}\}\big)$$
+      # The clipped polygon vertices become the (up to \texttt{MJ\_MAXCONPAIR}) contact points $\{w_1^{(i)},w_2^{(i)}\}$.
+      # </md>
       if multiccd_idx > -1:
         ncollision, witness1, witness2 = multicontact(
           multiccd_polygon_in[ccdid],
@@ -838,11 +917,18 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
+    # <md>
+    # $$p_i = \tfrac{1}{2}\big(w_1^{(i)} + w_2^{(i)}\big),\qquad
+    #   n = w_1^{(0)} - w_2^{(0)}\quad\text{(contact points = witness midpoints; normal from witness pair)}$$
+    # </md>
     for i in range(ncollision):
       points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
 
+    # <md>
+    # $$\text{collision sensor}\;\Longrightarrow\;n\leftarrow -n,\;\;(g_1,g_2)\leftarrow(g_2,g_1)\quad\text{(flip normal/order for sensor convention)}$$
+    # </md>
     # flip if collision sensor
     if pairid[1] >= 0:
       frame *= -1.0

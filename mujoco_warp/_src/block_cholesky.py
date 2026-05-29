@@ -40,11 +40,17 @@ def create_blocked_cholesky_func(block_size: int):
       # and update with contributions from previously computed blocks.
       A_kk_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(k, k), storage="shared")
 
+      # <md>
+      # $$\tilde{A}_{kk} = A_{kk} - \sum_{j<k} L_{kj}\, L_{kj}^{\top}\qquad\text{(Schur update of diagonal block from prior panels)}$$
+      # </md>
       for j in range(0, k, block_size):
         L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
         wp.tile_matmul(L_block, wp.tile_transpose(L_block), A_kk_tile, alpha=-1.0)
 
       # Compute the Cholesky factorization for the block
+      # <md>
+      # $$L_{kk}\, L_{kk}^{\top} = \tilde{A}_{kk}\qquad\text{(dense Cholesky of the updated diagonal block)}$$
+      # </md>
       L_kk_tile = wp.tile_cholesky(A_kk_tile)
       wp.tile_store(L, L_kk_tile, offset=(k, k))
 
@@ -52,11 +58,17 @@ def create_blocked_cholesky_func(block_size: int):
       for i in range(end, matrix_size, block_size):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
 
+        # <md>
+        # $$\tilde{A}_{ik} = A_{ik} - \sum_{j<k} L_{ij}\, L_{kj}^{\top}\qquad\text{(Schur update of below-diagonal block)}$$
+        # </md>
         for j in range(0, k, block_size):
           L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
           L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
           wp.tile_matmul(L_tile, wp.tile_transpose(L_2_tile), A_ik_tile, alpha=-1.0)
 
+        # <md>
+        # $$L_{ik} = \tilde{A}_{ik}\, L_{kk}^{-\top}\qquad\text{(triangular solve for off-diagonal panel block)}$$
+        # </md>
         wp.tile_lower_solve_inplace(L_kk_tile, wp.tile_transpose(A_ik_tile))
         wp.tile_store(L, A_ik_tile, offset=(i, k))
 
@@ -84,24 +96,36 @@ def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int)
     # Forward substitution: solve L y = b
     for i in range(0, matrix_size, block_size):
       rhs_view = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(i, 0))
+      # <md>
+      # $$\tilde{b}_i = b_i - \sum_{j<i} L_{ij}\, y_j\qquad\text{(forward substitution: subtract solved blocks)}$$
+      # </md>
       for j in range(0, i, block_size):
         L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
         y_block = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(j, 0))
         wp.tile_matmul(L_block, y_block, rhs_view, alpha=-1.0)
 
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
+      # <md>
+      # $$y_i = L_{ii}^{-1}\, \tilde{b}_i\qquad\text{(diagonal-block lower-triangular solve)}$$
+      # </md>
       wp.tile_lower_solve_inplace(L_tile, rhs_view)
 
     # Backward substitution: solve L^T x = y
     for i in range(matrix_size - block_size, -1, -block_size):
       i_end = i + block_size
       tmp_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(i, 0))
+      # <md>
+      # $$\tilde{y}_i = y_i - \sum_{j>i} L_{ji}^{\top}\, x_j\qquad\text{(back substitution: subtract solved blocks)}$$
+      # </md>
       for j in range(i_end, matrix_size, block_size):
         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i), storage="shared")
         x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0), storage="shared", bounds_check=False)
         wp.tile_matmul(wp.tile_transpose(L_tile), x_tile, tmp_tile, alpha=-1.0)
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
 
+      # <md>
+      # $$x_i = L_{ii}^{-\top}\, \tilde{y}_i\qquad\text{(diagonal-block upper-triangular solve)}$$
+      # </md>
       wp.tile_upper_solve_inplace(wp.tile_transpose(L_tile), tmp_tile)
       wp.tile_store(x, tmp_tile, offset=(i, 0), bounds_check=False)
 

@@ -2960,13 +2960,16 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
     else:
+      # <md>
       # Dense: one tile-matmul kernel per world.
       # Inside the kernel:
       #   - All worlds share the SAME padded shape: J is (nworld, njmax, nv_pad), D is (nworld, njmax).
       #     `m.nv_pad` rounds up `nv` to the tile size, `d.njmax` is a global upper bound on `nefc`.
       #     Per-world actual row count is `d.nefc[worldid]` (≤ njmax).
+      # 
       #   - Initial accumulator $H \leftarrow M$ (loaded once: `wp.tile_load(qM_in[worldid], ...)`).
-      #   - Stream over all `njmax` rows in tiles of `TILE_SIZE_JTDAJ_DENSE = 16`; for each tile,
+      #   
+      # - Stream over all `njmax` rows in tiles of `TILE_SIZE_JTDAJ_DENSE = 16`; for each tile,
       #     two masks zero out $D_k$:
       #       (a) `active_check`: rows with tile-id ≥ nefc - k are padding for this world.
       #       (b) `state_check` : rows with `state ≠ QUADRATIC` are inactive (satisfied / cone-top).
@@ -2976,6 +2979,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       #   - Tile body: $H \mathrel{+}= (J_k^{\top} \cdot \operatorname{diag}(D_k))\,J_k$.
       # `scoped_mathdx_gemm_disabled()`: forces Warp's tile-matmul to use the hand-written path
       # rather than the cuBLASDx-based one (the latter wasn't faster here at typical nv sizes).
+      # </md>
       with scoped_mathdx_gemm_disabled():
         wp.launch_tiled(
           update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),

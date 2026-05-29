@@ -89,9 +89,15 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
     # set qfrc = (d.qM + m.opt.timestep * diag(m.dof_damping)) * d.qacc
 
     # d.qM @ d.qacc
+    # <md>
+    # $$\texttt{qfrc} \;=\; M(q)\,\ddot q\quad\text{(mass-matrix product; first term of the Euler-damped discrete force)}$$
+    # </md>
     support.mul_m(m, d, qfrc, d.qacc)
 
     # qfrc += m.opt.timestep * m.dof_damping * d.qacc
+    # <md>
+    # $$\texttt{qfrc} \;\mathrel{+}=\; h\,\operatorname{diag}(b)\,\ddot q\quad\text{(add explicit Euler damping; }h=\texttt{timestep},\ b=\texttt{dof\_damping)}$$
+    # </md>
     wp.launch(
       _qfrc_eulerdamp,
       dim=(d.nworld, m.nv),
@@ -103,13 +109,25 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
     else:
       qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+    # <md>
+    # $$D \;=\; \frac{\partial \dot q_{\text{smooth}}}{\partial \dot q}\quad\text{(velocity Jacobian of smooth dynamics, used to form the implicit-fast discrete operator)}$$
+    # </md>
     derivative.deriv_smooth_vel(m, d, qDeriv)
+    # <md>
+    # $$\texttt{qfrc} \;=\; \bigl(M(q) - h\,D\bigr)\,\ddot q\quad\text{(IMPLICITFAST discrete force; }M\text{ replaced by the implicit operator via }\texttt{M=qDeriv)}$$
+    # </md>
     mul_m(m, d, qfrc, d.qacc, M=qDeriv)
+    # <md>
+    # $$\bigl(M(q) - h\,D\bigr)\,\ddot q_{\text{cont}} \;=\; \texttt{qfrc}\quad\text{(solve the implicit operator for the continuous-time acceleration)}$$
+    # </md>
     smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, qacc, qfrc)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 
   # solve for qacc: qfrc = d.qM @ d.qacc
+  # <md>
+  # $$M(q)\,\ddot q_{\text{cont}} \;=\; \texttt{qfrc}\;\Longrightarrow\; \ddot q_{\text{cont}} = M^{-1}\texttt{qfrc}\quad\text{(recover continuous-time acceleration from the discrete force)}$$
+  # </md>
   smooth.solve_m(m, d, qacc, qfrc)
 
 
@@ -126,8 +144,14 @@ def inv_constraint(m: Model, d: Data):
 
 def inverse(m: Model, d: Data):
   """Inverse dynamics."""
+  # <md>
+  # $$\bigl(G_i(q),\,\mathcal{I}^{\text{world}}_b,\,M(q)\bigr)\quad\text{(reuse forward position stage: kinematics, CoM/inertia, CRB mass matrix — all functions of }q\text{ only)}$$
+  # </md>
   forward.fwd_position(m, d)
   sensor.sensor_pos(m, d)
+  # <md>
+  # $$\bigl(v_b,\,c_b\bigr) = f(q,\dot q)\quad\text{(reuse forward velocity stage: spatial velocities and Coriolis-velocity products from }(q,\dot q))$$
+  # </md>
   forward.fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
 
@@ -137,13 +161,28 @@ def inverse(m: Model, d: Data):
     qacc_discrete = wp.clone(d.qacc)
     discrete_acc(m, d, d.qacc)
 
+  # <md>
+  # $$\texttt{qfrc\_constraint} \;=\; J^{\top}\lambda\quad\text{(inverse constraint solve: constraint force consistent with the prescribed state }(q,\dot q,\ddot q))$$
+  # </md>
   inv_constraint(m, d)
+  # <md>
+  # $$\texttt{qfrc\_bias} \;=\; C(q,\dot q) \;=\; J^{I,\top}\!\bigl(\mathcal{I}\,a_g + v\times^{*}\mathcal{I}\,v\bigr)\quad\text{(recursive Newton-Euler bias: Coriolis, centrifugal and gravity, with }\ddot q=0)$$
+  # </md>
   smooth.rne(m, d)
+  # <md>
+  # $$\texttt{qfrc\_bias} \;\mathrel{+}=\; J_t^{\top} f_t\quad\text{(add tendon bias forces)}$$
+  # </md>
   smooth.tendon_bias(m, d, d.qfrc_bias)
   sensor.sensor_acc(m, d)
 
+  # <md>
+  # $$\texttt{qfrc\_inverse} \;=\; M(q)\,\ddot q\quad\text{(inertial term; }\texttt{Ma}\text{ argument to the final assembly)}$$
+  # </md>
   support.mul_m(m, d, d.qfrc_inverse, d.qacc)
 
+  # <md>
+  # $$\tau \;=\; \underbrace{M(q)\,\ddot q}_{\texttt{Ma}} \;+\; \underbrace{C(q,\dot q)}_{\texttt{qfrc\_bias}} \;-\; \texttt{qfrc\_passive} \;-\; \underbrace{J^{\top}\lambda}_{\texttt{qfrc\_constraint}}\quad\text{(applied force recovered by inverse dynamics }\to\texttt{qfrc\_inverse})$$
+  # </md>
   wp.launch(
     _qfrc_inverse,
     dim=(d.nworld, m.nv),

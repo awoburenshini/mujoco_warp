@@ -63,9 +63,15 @@ def _write_flex_contact(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
+  # <md>
+  # $$\phi \ge \texttt{margin}\;\;\lor\;\;\phi \ge \texttt{MJ\_MAXVAL}\;\Longrightarrow\;\text{reject (separation exceeds inclusion margin)}$$
+  # </md>
   if dist >= margin or dist >= MJ_MAXVAL:
     return
 
+  # <md>
+  # $$c=\bigl(p,\,n,\,\phi,\,\mu\bigr),\qquad \texttt{geom}=(g,-1),\;\texttt{flex}=(-1,f),\;\texttt{vert}=(-1,v)\quad\text{(flex contact slot, atomically reserved)}$$
+  # </md>
   id_ = wp.atomic_add(nacon_out, 0, 1)
   if id_ >= naconmax_in:
     return
@@ -127,6 +133,9 @@ def _collide_geom_triangle(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
+  # <md>
+  # $$d(\text{sphere},T)=\min_{x\in T}\lVert x-c\rVert - r_s - r_T,\qquad p=\text{closest point on }T,\;\; n=\frac{c-p}{\lVert c-p\rVert}\quad\text{(point-triangle closest distance, both radii inflated)}$$
+  # </md>
   if gtype == int(GeomType.SPHERE):
     sphere_radius = size_val[0]
     dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(pos, sphere_radius, t1, t2, t3, tri_radius)
@@ -165,10 +174,16 @@ def _collide_geom_triangle(
     return
 
   # Capsule, box, cylinder all return up to 2 contacts - compute then share writing code
+  # <md>
+  # $$\bigl(\phi_k,\,p_k,\,n_k\bigr)_{k=0,1},\qquad \phi_k\in\mathbb{R},\;p_k,n_k\in\mathbb{R}^3\quad\text{(up to 2 contacts: capsule/cylinder via edge-edge closest distance, box via face/edge SAT)}$$
+  # </md>
   dists = wp.vec2(collision_primitive_core.MJ_MAXVAL, collision_primitive_core.MJ_MAXVAL)
   poss = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   nrms = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
+  # <md>
+  # $$d(\text{seg},T)=\min_{s\in[-h,h],\,x\in T}\bigl\lVert (c+s\,\hat a)-x\bigr\rVert - r_c - r_T\quad\text{(capsule axis }\hat a\text{ vs triangle: segment-triangle / edge-edge proximity)}$$
+  # </md>
   if gtype == int(GeomType.CAPSULE):
     cap_radius = size_val[0]
     cap_half_len = size_val[1]
@@ -187,6 +202,9 @@ def _collide_geom_triangle(
     )
 
   # Write up to 2 contacts (shared code for capsule/box/cylinder)
+  # <md>
+  # $$\phi_0<\texttt{margin}\;\Longrightarrow\;\text{emit }c_0=(p_0,\,n_0,\,\phi_0),\qquad F(n_0)=\bigl[\,n_0\;\;t_1\;\;t_2\,\bigr]\in SO(3)\quad\text{(contact frame from normal)}$$
+  # </md>
   if dists[0] < margin:
     p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
     n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
@@ -221,6 +239,9 @@ def _collide_geom_triangle(
       contact_geomcollisionid_out,
       nacon_out,
     )
+  # <md>
+  # $$\phi_1<\texttt{margin}\;\Longrightarrow\;\text{emit }c_1=(p_1,\,n_1,\,\phi_1)\quad\text{(second manifold point, e.g. opposite edge/face contact)}$$
+  # </md>
   if dists[1] < margin:
     p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
     n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
@@ -316,12 +337,18 @@ def _flex_plane_narrowphase(
     if gtype != int(GeomType.PLANE):
       continue
 
+    # <md>
+    # $$n = R_g\,e_z\quad\text{(plane normal = world }z\text{-axis of the plane geom frame)}$$
+    # </md>
     plane_pos = geom_xpos_in[worldid, geomid]
     plane_rot = geom_xmat_in[worldid, geomid]
     plane_normal = wp.vec3(plane_rot[0, 2], plane_rot[1, 2], plane_rot[2, 2])
 
     margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
 
+    # <md>
+    # $$\phi = \bigl\langle v - x_g,\;n\bigr\rangle - r\quad\text{(signed point-plane distance of flex vertex }v\text{, minus vertex radius }r)$$
+    # </md>
     diff = vert - plane_pos
     signed_dist = wp.dot(diff, plane_normal)
     dist = signed_dist - radius
@@ -343,6 +370,9 @@ def _flex_plane_narrowphase(
         wp.max(MJ_MINMU, fric2),
       )
 
+      # <md>
+      # $$p = v - n\,\Bigl(\tfrac{\phi}{2} + r\Bigr)\quad\text{(contact point midway between vertex surface and plane)}$$
+      # </md>
       contact_pos = vert - plane_normal * (dist * 0.5 + radius)
       _write_flex_contact(
         naconmax_in,
@@ -444,6 +474,9 @@ def _flex_narrowphase_dim2(
   tri_radius = flex_radius[flexid]
   tri_margin = flex_margin[flexid]
 
+  # <md>
+  # $$T = \bigl(t_1,t_2,t_3\bigr),\qquad t_k = v_{\,\texttt{vertadr}+\,e_k},\;\; e=\texttt{flex\_elem}\bigl[\texttt{elemdataadr}+3(\text{elemid}-\texttt{elemadr})+k\bigr]\quad\text{(2D flex element }\to\text{ world triangle)}$$
+  # </md>
   elem_data_idx = flex_elemdataadr[flexid] + (elemid - flex_elemadr[flexid]) * 3
   v0_local = flex_elem[elem_data_idx]
   v1_local = flex_elem[elem_data_idx + 1]
@@ -464,6 +497,9 @@ def _flex_narrowphase_dim2(
     ):
       continue
 
+    # <md>
+    # $$(\texttt{contype}_g\,\&\,\texttt{conaffinity}_f)\;\lor\;(\texttt{contype}_f\,\&\,\texttt{conaffinity}_g)\;\neq 0\quad\text{(collision affinity bitmask filter)}$$
+    # </md>
     g_contype = geom_contype[geomid]
     g_conaffinity = geom_conaffinity[geomid]
     f_contype = flex_contype[flexid]
@@ -595,6 +631,9 @@ def _flex_narrowphase_dim3(
   tri_radius = flex_radius[flexid]
   tri_margin = flex_margin[flexid]
 
+  # <md>
+  # $$T = \bigl(t_1,t_2,t_3\bigr),\qquad t_k = v_{\,\texttt{vertadr}+\,s_k},\;\; s=\texttt{flex\_shell}\bigl[\texttt{shelldataadr}+3\,\text{shellid}_{\text{loc}}+k\bigr]\quad\text{(3D flex surface shell }\to\text{ boundary triangle)}$$
+  # </md>
   shell_adr = flex_shelldataadr[flexid]
   local_shellid = shellid - shell_offset
   shell_data_idx = shell_adr + local_shellid * 3

@@ -100,9 +100,15 @@ def _qderiv_actuator_passive_vel(
       else:
         act = act_in[worldid, act_adr]
 
+      # <md>
+      # $$\texttt{vel} \;\mathrel{+}=\; g_a\,\texttt{act}\quad\text{(stateful actuator: force slope uses the activation }\texttt{act}\text{, or its one-step prediction }\texttt{next\_act}\text{ when }\texttt{actearly}\text{ is set)}$$
+      # </md>
       vel += gain * act
   else:
     if gain != 0.0:
+      # <md>
+      # $$\texttt{vel} \;\mathrel{+}=\; g_a\,\texttt{ctrl}\quad\text{(stateless actuator: }\partial F_a/\partial l_a\text{ slope evaluated directly at the control input)}$$
+      # </md>
       vel += gain * ctrl_in[worldid, actid]
 
   vel_out[worldid, actid] = vel
@@ -161,6 +167,9 @@ def _qderiv_actuator_passive_actuation_dense(
     if moment_i == 0 and moment_j == 0:
       continue
 
+    # <md>
+    # $$\bigl[\partial\tau_{\text{act}}/\partial\dot q\bigr]_{ij} \;\mathrel{+}=\; A_{a,i}\,A_{a,j}\,\texttt{vel}_a\quad\text{(rank-1 contribution of actuator }a\text{ to entry }(i,j)\text{; }A_{a,i}=\texttt{actuator\_moment}\text{ row }a\text{, col }i)$$
+    # </md>
     qderiv_contrib += moment_i * moment_j * vel
 
   qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
@@ -249,10 +258,19 @@ def _qderiv_actuator_passive(
     qderiv = qDeriv_in[worldid, dofiid, dofjid]
 
   if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
+    # <md>
+    # $$\bigl[\partial f/\partial\dot q\bigr]_{ii} \;\mathrel{-}=\; b_i\quad\text{(joint damping }\tau_{\text{passive}} = -b_i\dot q_i\text{ contributes }-b_i\text{ on the diagonal)}$$
+    # </md>
     qderiv -= dof_damping[worldid % dof_damping.shape[0], dofiid]
 
+  # <md>
+  # $$\texttt{qderiv} \;\leftarrow\; h\,\bigl[\partial f/\partial\dot q\bigr]_{ij}\quad\text{(scale force-velocity derivative by the time step }h\text{ before forming }M - h\,\partial f/\partial\dot q)$$
+  # </md>
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
+  # <md>
+  # $$\bigl[M - h\,\partial f/\partial\dot q\bigr]_{ij} \;=\; M_{ij} - \texttt{qderiv}\quad\text{(LHS of the implicit/implicitfast linear system; symmetric, written to both }(i,j)\text{ and }(j,i)\text{ in the dense path)}$$
+  # </md>
   if is_sparse:
     qDeriv_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
   else:
@@ -305,6 +323,9 @@ def _qderiv_tendon_damping(
         Ji = ten_J_in[worldid, sparseid]
       if colind == dofjid:
         Jj = ten_J_in[worldid, sparseid]
+    # <md>
+    # $$\texttt{qderiv} \;\mathrel{-}=\; b_t\, J_{t,i}\, J_{t,j}\quad\text{(tendon }t\text{ damping }b_t\text{ contributes }-b_t J_t^{\top}J_t\text{ to }\partial\tau/\partial\dot q\text{; }J_{t,i}\text{ is the tendon moment arm on dof }i)$$
+    # </md>
     qderiv -= Ji * Jj * damping
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
@@ -336,6 +357,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     out.zero_()
     if m.nu > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
       vel = wp.empty((d.nworld, m.nu), dtype=float)
+      # <md>
+      # $$\texttt{vel}_a \;=\; \frac{\partial F_a}{\partial l_a} \;=\; b_a + g_a\,\texttt{act}_a\quad\text{(per-actuator slope of force w.r.t. transmission length-rate; affine gain }g_a\text{ and bias }b_a\text{, zeroed when force is clamped by }\texttt{forcerange}\text{)}$$
+      # </md>
       wp.launch(
         _qderiv_actuator_passive_vel,
         dim=(d.nworld, m.nu),
@@ -361,6 +385,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         ],
         outputs=[vel],
       )
+      # <md>
+      # $$\frac{\partial \tau_{\text{act}}}{\partial \dot q} \;=\; A^{\top}\,\operatorname{diag}(\texttt{vel}_a)\,A \;\in\; \mathbb{R}^{n_v\times n_v},\qquad A = \texttt{actuator\_moment}\;(\tau_{\text{act}} = A^{\top} F_a)\quad\text{(actuator force Jacobian w.r.t. velocity; symmetric, accumulated over actuators)}$$
+      # </md>
       if m.is_sparse:
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
@@ -375,6 +402,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           inputs=[m.nu, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
           outputs=[out],
         )
+    # <md>
+    # $$\texttt{out} \;\leftarrow\; M(q) \;-\; h\Bigl(\tfrac{\partial \tau_{\text{act}}}{\partial \dot q} \;-\; \operatorname{diag}(b_{\text{dof}})\Bigr)\quad\text{(implicit-system matrix }M - h\,\partial f/\partial\dot q\text{; subtracts joint damping }b_{\text{dof}}\text{ on the diagonal, then scales the force-derivative by }h\text{)}$$
+    # </md>
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),
@@ -395,6 +425,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     wp.copy(out, d.qM)
 
   if not (m.opt.disableflags & DisableBit.DAMPER):
+    # <md>
+    # $$\texttt{out} \;\mathrel{+}=\; h\sum_{t} b_t\, J_t^{\top} J_t,\qquad \frac{\partial \tau_{\text{tendon}}}{\partial \dot q} = -\sum_t b_t\, J_t^{\top} J_t\quad\text{(implicit contribution of tendon damping }b_t\text{ with tendon Jacobian }J_t = \partial L_t/\partial q\text{; adds }-h\,\partial\tau/\partial\dot q\text{)}$$
+    # </md>
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),

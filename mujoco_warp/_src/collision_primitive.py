@@ -68,6 +68,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   contact_count = int(0)
 
   # get points in the convex frame
+  # <md>
+  # $$\hat{p}_o = R^{\top}(p_o - x_c),\qquad \hat{n} = R^{\top} n\quad\text{(plane point }p_o\text{ and normal }n\text{ expressed in the convex's local frame }(x_c,R))$$
+  # </md>
   plane_pos_local = wp.transpose(convex.rot) @ (plane_pos - convex.pos)
   n = wp.transpose(convex.rot) @ plane_normal
 
@@ -77,6 +80,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   # exhaustive search over all vertices
   if convex.graphadr == -1 or convex.vertnum < 10:
     # find first support point (a)
+    # <md>
+    # $$a = \operatorname*{arg\,max}_{v\in V}\;\langle \hat{p}_o - v,\;\hat{n}\rangle\qquad\text{(deepest vertex below the plane; signed depth }=\langle \hat{p}_o-v,\hat{n}\rangle)$$
+    # </md>
     max_support = wp.float32(-_HUGE_VAL)
     a = wp.vec3()
     for i in range(convex.vertnum):
@@ -265,6 +271,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     if count == 1:
       pos = convex.vert[convex.vertadr + idx]
       pos = convex.pos + convex.rot @ pos
+      # <md>
+      # $$\phi = -\langle \hat{p}_o - v,\;\hat{n}\rangle,\qquad p = (x_c + R\,v) - \tfrac{1}{2}\,\phi\,n\quad\text{(signed distance }\phi<0\text{ if penetrating; contact at the midpoint between vertex and plane)}$$
+      # </md>
       support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + idx], n)
       dist = -support
       pos = pos - 0.5 * dist * plane_normal
@@ -311,6 +320,9 @@ def plane_sphere_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contact between a sphere and a plane."""
+  # <md>
+  # $$\phi = n\cdot(x_s - p_o) - r,\qquad n_{\text{contact}} = n,\qquad p = x_s - \bigl(r + \tfrac{1}{2}\phi\bigr)\,n\quad\text{(plane }(n,\,p_o)\text{, sphere center }x_s\text{, radius }r)$$
+  # </md>
   normal = plane.normal
   dist, pos = plane_sphere(normal, plane.pos, sphere.pos, sphere.size[0])
 
@@ -383,6 +395,9 @@ def sphere_sphere_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contact between two spheres."""
+  # <md>
+  # $$\phi = \lVert x_2 - x_1\rVert - r_1 - r_2,\qquad n = \frac{x_2 - x_1}{\lVert x_2 - x_1\rVert},\qquad p = x_1 + \bigl(r_1 + \tfrac{1}{2}\phi\bigr)\,n\quad\text{(centers }x_i\text{, radii }r_i)$$
+  # </md>
   dist, pos, normal = sphere_sphere(sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0])
 
   write_contact(
@@ -457,6 +472,10 @@ def sphere_capsule_wrapper(
   # capsule axis
   axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
 
+  # <md>
+  # $$s = \mathrm{clamp}\bigl(\langle x_s - x_c,\,\hat{a}\rangle,\,-h,\,h\bigr),\quad q = x_c + s\,\hat{a},\qquad \phi = \lVert x_s - q\rVert - r_s - r_c,\quad n = \frac{x_s - q}{\lVert x_s - q\rVert}$$
+  # </md>
+  # closest point on the capsule segment (center $x_c$, axis $\hat a$, half-length $h$, radius $r_c$) to the sphere center $x_s$ (radius $r_s$).
   dist, pos, normal = sphere_capsule(sphere.pos, sphere.size[0], cap.pos, axis, cap.size[0], cap.size[1])
 
   write_contact(
@@ -532,6 +551,10 @@ def capsule_capsule_wrapper(
   cap1_axis = wp.vec3(cap1.rot[0, 2], cap1.rot[1, 2], cap1.rot[2, 2])
   cap2_axis = wp.vec3(cap2.rot[0, 2], cap2.rot[1, 2], cap2.rot[2, 2])
 
+  # <md>
+  # $$(q_1,q_2) = \operatorname*{arg\,min}_{\substack{s_1\in[-h_1,h_1]\\ s_2\in[-h_2,h_2]}} \bigl\lVert (x_1 + s_1\hat{a}_1) - (x_2 + s_2\hat{a}_2)\bigr\rVert,\qquad \phi = \lVert q_2 - q_1\rVert - r_1 - r_2,\quad n = \frac{q_2 - q_1}{\lVert q_2 - q_1\rVert}$$
+  # </md>
+  # closest points between the two capsule segments (centers $x_i$, axes $\hat a_i$, half-lengths $h_i$, radii $r_i$).
   dist, pos, normal = capsule_capsule(
     cap1.pos,
     cap1_axis,
@@ -617,6 +640,9 @@ def plane_capsule_wrapper(
   # capsule axis
   capsule_axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
 
+  # <md>
+  # $$e_{\pm} = x_c \pm h\,\hat{a}\;\text{(segment endpoints)},\qquad \phi_{\pm} = n\cdot(e_{\pm} - p_o) - r\quad\text{(up to two contacts, one per capsule end, against plane }(n,p_o))$$
+  # </md>
   dist, pos, frame = plane_capsule(
     plane.normal,
     plane.pos,
@@ -696,6 +722,10 @@ def plane_ellipsoid_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between an ellipsoid and a plane."""
+  # <md>
+  # $$s = \operatorname*{arg\,max}_{\lVert R^{\top}(\cdot)\,/\,\mathrm{diag}(a,b,c)\rVert=1}\;\bigl(-n\cdot s\bigr)\;\Rightarrow\; s = x_e - \frac{R\,\mathrm{diag}(a^2,b^2,c^2)\,R^{\top} n}{\lVert \mathrm{diag}(a,b,c)\,R^{\top} n\rVert},\qquad \phi = n\cdot(s - p_o)$$
+  # </md>
+  # lowest support point of the ellipsoid (center $x_e$, orientation $R$, semi-axes $(a,b,c)$) against plane $(n,p_o)$.
   dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, ellipsoid.rot, ellipsoid.size)
 
   write_contact(
@@ -767,6 +797,9 @@ def plane_box_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a box and a plane."""
+  # <md>
+  # $$v_k = x_b + R\,(\pm s_x,\,\pm s_y,\,\pm s_z),\qquad \phi_k = n\cdot(v_k - p_o)\quad\text{(per box corner }v_k\text{; keep up to 4 deepest, box half-sizes }s)$$
+  # </md>
   dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
   frame = make_frame(normal)
 
@@ -840,6 +873,9 @@ def plane_convex_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a plane and a convex object."""
+  # <md>
+  # $$\phi_k = -\max_{v\in V}\langle p_o - v,\,n\rangle\;\text{over up to 4 distinct support vertices},\qquad n_{\text{contact}} = n\quad\text{(deepest face of the convex hull }V\text{ against plane }(n,p_o))$$
+  # </md>
   dist, pos, normal = plane_convex(plane.normal, plane.pos, convex)
 
   frame = make_frame(normal)
@@ -913,6 +949,9 @@ def sphere_cylinder_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a sphere and a cylinder."""
+  # <md>
+  # $$d_{\parallel} = \langle x_s - x_c,\,\hat{a}\rangle,\quad x_{\perp} = (x_s - x_c) - d_{\parallel}\hat{a},\qquad \phi = \sqrt{(\lVert x_{\perp}\rVert - R)_+^2 + (|d_{\parallel}| - h)_+^2} - r_s\quad\text{(cylinder axis }\hat a\text{, radius }R\text{, half-length }h)$$
+  # </md>
   # cylinder axis
   cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
 
@@ -994,6 +1033,9 @@ def plane_cylinder_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a cylinder and a plane."""
+  # <md>
+  # $$c_{\pm} = x_c \pm h\,\hat{a},\qquad e_{\pm} = c_{\pm} - R\,\frac{n - (n\cdot\hat{a})\hat{a}}{\lVert n - (n\cdot\hat{a})\hat{a}\rVert},\qquad \phi = \min_k\, n\cdot(e_k - p_o)\quad\text{(rim points of cap circles closest to plane }(n,p_o))$$
+  # </md>
   # cylinder axis
   cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
 
@@ -1076,6 +1118,9 @@ def sphere_box_wrapper(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
+  # <md>
+  # $$\hat{x} = R^{\top}(x_s - x_b),\quad q = \mathrm{clamp}(\hat{x},\,-s,\,s),\qquad \phi = \lVert \hat{x} - q\rVert - r_s,\quad n = R\,\frac{\hat{x} - q}{\lVert \hat{x} - q\rVert}\quad\text{(closest point on box, half-sizes }s\text{, to sphere center }x_s)$$
+  # </md>
   dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, box.rot, box.size)
 
   write_contact(
@@ -1147,6 +1192,9 @@ def capsule_box_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a capsule and a box."""
+  # <md>
+  # $$(q_s,\,q_b) = \operatorname*{arg\,min}_{s\in[-h,h],\;y\in\text{box}}\bigl\lVert (x_c + s\hat{a}) - y\bigr\rVert,\qquad \phi = \lVert q_s - q_b\rVert - r\quad\text{(closest points between capsule segment and box; up to 2 contacts)}$$
+  # </md>
   # Extract capsule axis
   axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
 
@@ -1232,6 +1280,9 @@ def box_box_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between two boxes."""
+  # <md>
+  # $$n = \operatorname*{arg\,min}_{a\in\{R_1 e_i,\,R_2 e_j,\,R_1 e_i\times R_2 e_j\}}\;\mathrm{overlap}(a),\qquad \phi = -\max_a\,\mathrm{sep}(a)\quad\text{(separating-axis test over face + edge-edge axes; clip overlapping faces for up to 8 contacts)}$$
+  # </md>
   # Call the core function to get contact geometry
   dist, pos, normal = box_box(
     box1.pos,
@@ -1412,6 +1463,9 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
       worldid,
     )
 
+    # <md>
+    # $$\bigl(p_k,\,n_k,\,\phi_k\bigr)_{k} = \mathrm{solver}_{(t_1,t_2)}\bigl(g_1,\,g_2\bigr)\quad\text{(static dispatch: pick the closed-form routine matching this candidate's geom-type pair }(t_1,t_2))$$
+    # </md>
     for i in range(wp.static(len(primitive_collisions_func))):
       collision_type1 = wp.static(primitive_collisions_types[i][0])
       collision_type2 = wp.static(primitive_collisions_types[i][1])

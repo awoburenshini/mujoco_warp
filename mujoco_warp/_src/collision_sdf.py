@@ -156,11 +156,17 @@ def radial_field(a: wp.vec3, x: wp.vec3, size: wp.vec3) -> wp.vec3:
 
 @wp.func
 def sphere(p: wp.vec3, size: wp.vec3) -> float:
+  # <md>
+  # $$f(x) = \lVert x \rVert - r\qquad\text{(signed distance to a sphere of radius }r=\texttt{size}[0]\text{)}$$
+  # </md>
   return wp.length(p) - size[0]
 
 
 @wp.func
 def box(p: wp.vec3, size: wp.vec3) -> float:
+  # <md>
+  # $$f(x) = \bigl\lVert \max(a,\,0) \bigr\rVert + \min\!\bigl(\max_k a_k,\,0\bigr),\qquad a = |x| - \texttt{size}\quad\text{(signed distance to an axis-aligned box; outside branch)}$$
+  # </md>
   a = wp.abs(p) - size
   if a[0] >= 0 or a[1] >= 0 or a[2] >= 0:
     z = wp.vec3(0.0, 0.0, 0.0)
@@ -173,6 +179,9 @@ def box(p: wp.vec3, size: wp.vec3) -> float:
 
 @wp.func
 def ellipsoid(p: wp.vec3, size: wp.vec3) -> float:
+  # <md>
+  # $$f(x) \approx \frac{k_0\,(k_0-1)}{k_1},\qquad k_0 = \Bigl\lVert \tfrac{x}{\texttt{size}} \Bigr\rVert,\quad k_1 = \Bigl\lVert \tfrac{x}{\texttt{size}^2} \Bigr\rVert\quad\text{(first-order distance estimate to an ellipsoid)}$$
+  # </md>
   scaled_p = wp.vec3(p[0] / size[0], p[1] / size[1], p[2] / size[2])
   k0 = wp.length(scaled_p)
   k1 = wp.length(wp.vec3(p[0] / (size[0] ** 2.0), p[1] / (size[1] ** 2.0), p[2] / (size[2] ** 2.0)))
@@ -185,6 +194,9 @@ def ellipsoid(p: wp.vec3, size: wp.vec3) -> float:
 
 @wp.func
 def grad_sphere(p: wp.vec3) -> wp.vec3:
+  # <md>
+  # $$\nabla f(x) = \frac{x}{\lVert x \rVert} = n\qquad\text{(unit outward normal of the sphere SDF)}$$
+  # </md>
   c = wp.length(p)
   if c > 1e-9:
     return p / c
@@ -194,6 +206,9 @@ def grad_sphere(p: wp.vec3) -> wp.vec3:
 
 @wp.func
 def grad_box(p: wp.vec3, size: wp.vec3) -> wp.vec3:
+  # <md>
+  # $$\nabla f(x) = \frac{\max(a,0)}{\lVert \max(a,0) \rVert}\odot\operatorname{sign}(x),\qquad a = |x| - \texttt{size}\quad\text{(box SDF gradient }=\text{ contact normal }n\text{; zeroed on interior faces)}$$
+  # </md>
   a = wp.abs(p) - size
   if wp.max(a) < 0:
     return radial_field(a, p, size)
@@ -212,6 +227,9 @@ def grad_box(p: wp.vec3, size: wp.vec3) -> wp.vec3:
 
 @wp.func
 def grad_ellipsoid(p: wp.vec3, size: wp.vec3) -> wp.vec3:
+  # <md>
+  # $$\nabla f(x) = \frac{g}{\lVert g \rVert},\qquad g = \frac{\partial f}{\partial k_0}\,\nabla k_0 - \frac{\partial f}{\partial k_1}\,\nabla k_1\quad\text{(normalized chain-rule gradient of the ellipsoid SDF }=n\text{)}$$
+  # </md>
   a = wp.vec3(p[0] / size[0], p[1] / size[1], p[2] / size[2])
   b = wp.vec3(a[0] / size[0], a[1] / size[1], a[2] / size[2])
   k0 = wp.length(a)
@@ -361,6 +379,9 @@ def box_project(center: wp.vec3, half_size: wp.vec3, xyz: wp.vec3) -> Tuple[floa
 
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
+  # <md>
+  # $$f(x) = d_{\text{box}}(x) + \sum_{j=0}^{7} w_j(x)\, c_j\qquad\text{(octree-leaf trilinear interpolation of stored SDF coefficients }c_j\text{, plus distance to the volume's bounding box)}$$
+  # </md>
   dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
   node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=False, root=volume_data.root)
   return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
@@ -369,6 +390,9 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
 @wp.func
 def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
   dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
+  # <md>
+  # $$\nabla f(x) \approx \frac{f(x + h\,e_k) - f(x)}{h}\,e_k\qquad\text{(outside the bounding box: forward finite-difference gradient, }h=10^{-4}\text{)}$$
+  # </md>
   if dist0 > 0:
     h = 1e-4
     dx = wp.vec3(h, 0.0, 0.0)
@@ -379,6 +403,9 @@ def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
     grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
     grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
     return wp.vec3(grad_x, grad_y, grad_z)
+  # <md>
+  # $$\nabla f(x) = \sum_{j=0}^{7} \nabla w_j(x)\, c_j\qquad\text{(inside the box: analytic gradient of the trilinear octree interpolant)}$$
+  # </md>
   node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=True, root=volume_data.root)
   grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
   grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
@@ -504,6 +531,10 @@ def clearance(
   mesh_data1: MeshData,
   mesh_data2: MeshData,
 ) -> float:
+  # <md>
+  # $$f_1 = f_1(p_1),\quad f_2 = f_2(p_2)$$
+  # $$g(x) = \begin{cases} \max(f_1, f_2) & \text{(intersection objective: drive both fields negative)} \\ f_1 + f_2 + \bigl|\max(f_1, f_2)\bigr| & \text{(clearance objective: closest-point / surface seeking)} \end{cases}$$
+  # </md>
   sdf1 = sdf(type1, p1, s1, sdf_type1, volume_data1, mesh_data1)
   sdf2 = sdf(GeomType.SDF, p2, s2, sdf_type2, volume_data2, mesh_data2)
   if sfd_intersection:
@@ -527,6 +558,9 @@ def compute_grad(
   mesh_data1: MeshData,
   mesh_data2: MeshData,
 ) -> wp.vec3:
+  # <md>
+  # $$\nabla g(x) = R_{12}^{\top}\,\nabla f_1(p_1) + \nabla f_2(p_2) + \operatorname{sign}\!\bigl(\max(f_1,f_2)\bigr)\,\nabla\!\max(f_1,f_2)\quad\text{(gradient of the combined objective; geom-1 gradient rotated into geom-2 frame via }R_{12}^{\top}\text{)}$$
+  # </md>
   A = sdf(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   B = sdf(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
@@ -564,6 +598,9 @@ def gradient_step(
   mesh_data1: MeshData,
   mesh_data2: MeshData,
 ) -> Tuple[float, wp.vec3]:
+  # <md>
+  # $$x_{k+1} = x_k - \alpha_k\,\nabla g(x_k)\qquad\text{(projected gradient descent on the SDF objective }g\text{ to locate the deepest-penetration / closest point)}$$
+  # </md>
   amin = 1e-4
   rho = 0.5
   c = 0.1
@@ -592,6 +629,9 @@ def gradient_step(
     grad_dot = wp.dot(grad, grad)
     if grad_dot < 1e-12:
       return dist0, x
+    # <md>
+    # $$g\bigl(x_k - \alpha\,\nabla g(x_k)\bigr) - g(x_k) \;\le\; -c\,\alpha\,\lVert \nabla g(x_k) \rVert^2,\qquad \alpha \leftarrow \rho\,\alpha\quad\text{(Armijo backtracking line search: halve }\alpha\text{ until sufficient decrease)}$$
+    # </md>
     wolfe = -c * alpha * grad_dot
     while True:
       alpha *= rho
@@ -638,6 +678,9 @@ def gradient_descent(
   mesh_data1: MeshData,
   mesh_data2: MeshData,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
+  # <md>
+  # $$R_{12} = R_1^{\top} R_2,\qquad t_{12} = R_1^{\top}(t_2 - t_1)\qquad\text{(relative pose mapping geom-2 local coordinates into the geom-1 frame)}$$
+  # </md>
   params = OptimizationParams()
   params.rel_mat = wp.transpose(rot1) * rot2
   params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
@@ -647,6 +690,9 @@ def gradient_descent(
     type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False, volume_data1, volume_data2, mesh_data1, mesh_data2
   )
   dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True, volume_data1, volume_data2, mesh_data1, mesh_data2)
+  # <md>
+  # $$\hat n_1 = \frac{R_{12}^{\top}\nabla f_1}{\lVert\cdot\rVert},\quad \hat n_2 = \frac{\nabla f_2}{\lVert\cdot\rVert},\qquad n = \frac{\hat n_1 - \hat n_2}{\lVert \hat n_1 - \hat n_2 \rVert}\quad\text{(contact normal from opposing surface gradients of the two SDFs)}$$
+  # </md>
   x_1 = params.rel_mat * x + params.rel_pos
   grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad1 = wp.transpose(params.rel_mat) * grad1
@@ -655,6 +701,9 @@ def gradient_descent(
   grad2 = wp.normalize(grad2)
   n = grad1 - grad2
   n = wp.normalize(n)
+  # <md>
+  # $$p = R_2\,x + t_2,\qquad n_{\text{world}} = R_2\,n,\qquad p_c = p - \tfrac{1}{2}\,\phi\,n_{\text{world}}\quad\text{(world-frame contact point at the midpoint of the penetration }\phi=\text{dist})}$$
+  # </md>
   pos = rot2 * x + pos2
   n = rot2 * n
   pos3 = pos - n * dist / 2.0
@@ -871,6 +920,9 @@ def _sdf_narrowphase(
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
 
+  # <md>
+  # $$x^{(i)} \sim \mathcal{U}\bigl(\widehat{B}_1 \cap \widehat{B}_2\bigr)\quad\text{via Halton sequence}\qquad i = 0,\dots,\texttt{sdf\_initpoints}-1\quad\text{(quasi-random seeds in the AABB overlap, one descent per seed)}$$
+  # </md>
   x_g2 = wp.vec3(
     aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
     aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
@@ -895,6 +947,9 @@ def _sdf_narrowphase(
     mesh_data1,
     mesh_data2,
   )
+  # <md>
+  # $$c = \bigl(\phi,\; p_c,\; \mathrm{frame}(n),\; \mu,\; \text{solref},\dots\bigr)\qquad\text{(emit SDF contact: penetration depth }\phi\text{, contact point }p_c\text{, and contact frame built from normal }n\text{)}$$
+  # </md>
   write_contact(
     naconmax_in,
     0,

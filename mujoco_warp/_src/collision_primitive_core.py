@@ -41,6 +41,9 @@ def normalize_with_norm(x: Any):
 def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
   """Returns the closest point on the a-b line segment to a point pt."""
   ab = b - a
+  # <md>
+  # $$t^\star=\operatorname{clamp}\!\Bigl(\frac{(p-a)\cdot(b-a)}{\lVert b-a\rVert^2},\,0,\,1\Bigr),\qquad q = a + t^\star\,(b-a)\quad\text{(projection of }p\text{ onto segment, clamped)}$$
+  # </md>
   t = wp.dot(pt - a, ab) / (wp.dot(ab, ab) + 1e-6)
   return a + wp.clamp(t, 0.0, 1.0) * ab
 
@@ -66,6 +69,12 @@ def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1:
 
   trans = a_mid - b_mid
 
+  # <md>
+  # Closest points of two segments parameterized about their midpoints. With unit directions
+  # $u=\hat a$, $w=\hat b$ and offset $r=a_{\text{mid}}-b_{\text{mid}}$, minimizing
+  # $\lVert (a_{\text{mid}}+t_a u)-(b_{\text{mid}}+t_b w)\rVert^2$ gives the normal equations
+  # $$t_a=\frac{-(u\cdot r)+(u\cdot w)(w\cdot r)}{1-(u\cdot w)^2},\qquad t_b=(w\cdot r)+t_a\,(u\cdot w),\qquad t_a\in[-\tfrac{\ell_a}{2},\tfrac{\ell_a}{2}],\;t_b\in[-\tfrac{\ell_b}{2},\tfrac{\ell_b}{2}]$$
+  # </md>
   dira_dot_dirb = wp.dot(dir_a, dir_b)
   dira_dot_trans = wp.dot(dir_a, trans)
   dirb_dot_trans = wp.dot(dir_b, trans)
@@ -106,6 +115,9 @@ class mat83f(wp.types.matrix(shape=(8, 3), dtype=wp.float32)):
 @wp.func
 def plane_sphere(plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3, sphere_radius: float) -> Tuple[float, wp.vec3]:
   # TODO(team): docstring
+  # <md>
+  # $$\phi = n\cdot(c - p_{\text{plane}}) - r,\qquad p = c - n\,(r + \tfrac12\phi)\quad\text{(signed gap; contact at midpoint between surfaces)}$$
+  # </md>
   dist = wp.dot(sphere_pos - plane_pos, plane_normal) - sphere_radius
   pos = sphere_pos - plane_normal * (sphere_radius + 0.5 * dist)
   return dist, pos
@@ -132,6 +144,9 @@ def sphere_sphere(
     - Contact position.
     - Contact normal vector.
   """
+  # <md>
+  # $$n = \frac{c_2 - c_1}{\lVert c_2 - c_1\rVert},\qquad \phi = \lVert c_2 - c_1\rVert - (r_1 + r_2),\qquad p = c_1 + n\,(r_1 + \tfrac12\phi)$$
+  # </md>
   dir = pos2 - pos1
   dist = wp.length(dir)
   if dist == 0.0:
@@ -218,6 +233,11 @@ def capsule_capsule(
   axis2 = cap2_axis * cap2_half_length
   dif = cap1_pos - cap2_pos
 
+  # <md>
+  # Closest points between the two capsule centerlines $c_i\pm s_i$ (segment params $x_i\in[-1,1]$).
+  # Minimizing $\lVert (c_1+x_1 s_1)-(c_2+x_2 s_2)\rVert^2$ yields the $2\times2$ system
+  # $$\begin{bmatrix} s_1\!\cdot\!s_1 & -s_1\!\cdot\!s_2 \\ -s_1\!\cdot\!s_2 & s_2\!\cdot\!s_2 \end{bmatrix}\!\begin{bmatrix} x_1\\ x_2\end{bmatrix}=\begin{bmatrix} -s_1\!\cdot\!\delta\\ s_2\!\cdot\!\delta\end{bmatrix},\qquad \delta = c_1-c_2,\quad \det = m_a m_c - m_b^2$$
+  # </md>
   # compute matrix coefficients and determinant
   ma = wp.dot(axis1, axis1)
   mb = -wp.dot(axis1, axis2)
@@ -258,6 +278,9 @@ def capsule_capsule(
 
   # parallel axes: test all 4 endpoint pairs, keep first 2 that pass margin check
   else:
+    # <md>
+    # $$\det\approx 0\ (s_1\parallel s_2)\;\Longrightarrow\;\text{clamp each endpoint onto the opposite segment and keep the first two pairs with }\phi\le\text{margin}$$
+    # </md>
     contact_count = 0
 
     # x1 = 1: test positive end of capsule 1
@@ -416,6 +439,12 @@ def plane_box(
     - Matrix of contact positions (one per row).
     - Contact normal vector.
   """
+  # <md>
+  # For each of the 8 box corners $v_k = x_{\text{box}} + R\,\big(\!\pm h_x,\pm h_y,\pm h_z\big)$, the
+  # signed distance to the plane is $\phi_k = n\cdot(v_k - p_{\text{plane}})$ and the contact sits at the
+  # surface midpoint:
+  # $$\phi_k = n\cdot(x_{\text{box}} - p_{\text{plane}}) + n\cdot(R\,h^{(k)}),\qquad p_k = v_k - \tfrac12 n\,\phi_k$$
+  # </md>
   center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
   dist = vec8f(MJ_MAXVAL)
@@ -468,6 +497,10 @@ def sphere_cylinder(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
+  # <md>
+  # Decompose the sphere center relative to the cylinder into axial and radial parts:
+  # $$x = (c_s - c_{\text{cyl}})\cdot \hat a,\qquad p_\perp = (c_s - c_{\text{cyl}}) - x\,\hat a,\qquad \text{side}\!:\,|x|<H,\;\;\text{cap}\!:\,\lVert p_\perp\rVert<R$$
+  # </md>
   vec = sphere_pos - cylinder_pos
   x = wp.dot(vec, cylinder_axis)
 
@@ -697,6 +730,13 @@ def box_box(
   separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
   axis_code = wp.int32(-1)
 
+  # <md>
+  # Separating-axis test (SAT) over the 3 face normals of each box. For a candidate axis $e$ the
+  # overlap is $\text{half-projection}_1 + \text{half-projection}_2 - |t\!\cdot\!e|$; here in box1's frame
+  # the box1 face axes give
+  # $$c^{(1)}_i = h^{(1)}_i + \big(|R_{21}|\,h^{(2)}\big)_i - |t_{21,i}|,\qquad c^{(2)}_i = h^{(2)}_i + \big(|R_{12}|\,h^{(1)}\big)_i - |t_{12,i}|$$
+  # Any $c<-\text{margin}$ proves separation (early-out); otherwise track the axis of minimum overlap.
+  # </md>
   # First test: consider boxes' face normals
   for i in range(3):
     c1 = -wp.abs(pos21[i]) + box1_size[i] + plen2[i]
@@ -718,6 +758,11 @@ def box_box(
   cle1 = wp.int32(0)
   cle2 = wp.int32(0)
 
+  # <md>
+  # Second SAT batch: the 9 edge-edge axes $e = a_i \times b_j$ (normalized). Separation along $e$ is
+  # $$c_3 = \sum_{k\ne i} h^{(1)}_k\,|e_k| + \sum_{k\ne j} h^{(2)}_k\,|(R_{21})_{i,\cdot}| - |t_{21}\!\cdot e|$$
+  # Degenerate (near-parallel) axes with $\lVert a_i\times b_j\rVert<\varepsilon$ are skipped; $c_3<-\text{margin}$ proves separation.
+  # </md>
   # Second test: consider cross products of boxes' edges
   for i in range(3):
     for j in range(3):
@@ -779,6 +824,13 @@ def box_box(
   # 8 contacts should suffice for most configurations
 
   if axis_code < 12:
+    # <md>
+    # Face-vertex manifold: rotate into the reference face frame so the separating face normal is $+z$,
+    # then clip the incident face polygon against the reference face $[-\ell_x,\ell_x]\times[-\ell_y,\ell_y]$.
+    # Penetration of each retained vertex is its (negative) $z$ below the face plane; the contact point is
+    # placed at the midpoint $z\mapsto z/2$.
+    # $$n = \pm R\,e_z,\qquad \phi_k = z_k,\qquad p_k = R\,(x_k,\,y_k,\,z_k/2) + x_{\text{box}}$$
+    # </md>
     # Handle face-vertex collision
     face_idx = axis_code % 6
     box_idx = axis_code // 6
@@ -890,6 +942,12 @@ def box_box(
     normal = wp.where(box_idx, -1.0, 1.0) * wp.transpose(rw)[2]
 
   else:
+    # <md>
+    # Edge-edge manifold: project box2's incident face onto the contact normal $n$ (rotated so the
+    # reference frame normal is $\hat z$) using $1/n_z$, clip against box1's face, and recover penetration
+    # depth along $n$:
+    # $$\text{proj}\!:\,p \mapsto p - n\,\frac{p_z}{n_z},\qquad \phi = \frac{2\,p_z}{n_z}\quad\text{(scaled signed distance along separating axis)}$$
+    # </md>
     # Handle edge-edge collision
     edge1 = (axis_code - 12) // 3
     edge2 = (axis_code - 12) % 3
@@ -1122,6 +1180,12 @@ def sphere_box(
     - Contact positions.
     - Contact normal vectors.
   """
+  # <md>
+  # Transform the sphere center to box-local coordinates, then clamp componentwise into the box to get the
+  # closest box point $q$. If $c$ lies outside the box ($\lVert q-c\rVert>0$) the normal points along
+  # $q-c$; if inside, fall back to the nearest face.
+  # $$c = R^\top(c_s - x_{\text{box}}),\qquad q = \operatorname{clamp}(c,\,-h,\,h),\qquad \phi = \lVert q-c\rVert - r$$
+  # </md>
   center = wp.transpose(box_rot) @ (sphere_pos - box_pos)
 
   clamped = wp.max(-box_size, wp.min(box_size, center))
@@ -1129,6 +1193,9 @@ def sphere_box(
 
   # sphere center inside box
   if dist <= MJ_MINVAL:
+    # <md>
+    # $$k^\star = \arg\min_{k\in\{0..5\}} \big|\,\pm h_{\lfloor k/2\rfloor} - c_{\lfloor k/2\rfloor}\big|,\qquad n = R\,e_{k^\star},\qquad \phi = -\,\text{dist}(c,\,\text{face}_{k^\star}) - r\quad\text{(eject through nearest face)}$$
+    # </md>
     closest = 2.0 * (box_size[0] + box_size[1] + box_size[2])
     k = wp.int32(0)
     for i in range(6):
@@ -1259,6 +1326,12 @@ def capsule_box(
       box_pt[j] = 0.0
 
       # find closest point between capsule and the edge
+      # <md>
+      # Closest points between the capsule centerline (param $x_2\in[-1,1]$ along $\text{halfaxis}$) and a box
+      # edge (param $x_1\in[-1,1]$ along axis $j$) solve the $2\times2$ normal equations
+      # $$\begin{bmatrix} m_a & m_b \\ m_b & m_c \end{bmatrix}\!\begin{bmatrix} x_1\\ x_2\end{bmatrix}=\begin{bmatrix} u\\ v\end{bmatrix},\quad m_a=h_j^2,\;m_b=-h_j\,\text{halfaxis}_j,\;m_c=L^2,\;\det = m_a m_c - m_b^2$$
+      # with out-of-range params reclamped to the nearer endpoint.
+      # </md>
       dif = box_pt - pos
 
       u = -box_size[j] * dif[j]
@@ -1540,6 +1613,12 @@ def sphere_triangle(
     - Contact position.
     - Contact normal vector.
   """
+  # <md>
+  # Project the sphere center onto the triangle plane (normal $N=\widehat{A\times B}$), test whether the
+  # projection lies inside the triangle via consistent edge-sign tests, else take the nearest point on the
+  # three edges; the closest triangle point $X$ then yields
+  # $$N = \frac{A\times B}{\lVert A\times B\rVert},\qquad P = S - (N\!\cdot\!S)\,N,\qquad \phi = \lVert X - S\rVert - r_{\text{sphere}} - r_{\text{tri}}$$
+  # </md>
   S = sphere_pos - t1
   A = t2 - t1
   B = t3 - t1

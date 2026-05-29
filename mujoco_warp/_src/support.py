@@ -48,6 +48,9 @@ def next_act(
   clamp: bool,
 ) -> float:
   # advance actuation
+  # <md>
+  # $$a' = a + \dot a\, \tau \bigl(1 - e^{-h/\tau}\bigr)\;\text{(exact filter)},\qquad a' = a + \dot a\, h\;\text{(otherwise)}\quad\text{(actuator state integration over step }h\text{)}$$
+  # </md>
   if actuator_dyntype == DynType.FILTEREXACT:
     tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
     act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
@@ -86,6 +89,9 @@ def mul_m_sparse(check_skip: bool):
         return
 
     # Gather all contributions (diagonal + off-diagonal)
+    # <md>
+    # $$(\texttt{res})_i = (M\, v)_i = \sum_{j} M_{ij}\, v_j\quad\text{(sparse mass-matrix mat-vec; one thread per DOF gathers stored nonzeros)}$$
+    # </md>
     acc = float(0.0)
     start = qM_mulm_rowadr[dofid]
     end = qM_mulm_rowadr[dofid + 1]
@@ -118,6 +124,9 @@ def mul_m_dense(nv: int, check_skip: bool):
       if skip[worldid]:
         return
 
+    # <md>
+    # $$(\texttt{res})_i = (M\, v)_i = \sum_{j=0}^{n_v-1} M_{ij}\, v_j\quad\text{(dense mass-matrix mat-vec; one thread per output row)}$$
+    # </md>
     acc = float(0.0)
     for j in range(wp.static(nv)):
       acc += qM_in[worldid, i, j] * vec[worldid, j]
@@ -186,6 +195,9 @@ def _apply_ft(
   qfrc_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
+  # <md>
+  # $$\tau = \sum_{b\,\in\,\text{subtree}(\texttt{dof})} J_b^{\top}\, f_b\quad\text{(map applied spatial wrenches }f_b=(\text{torque},\text{force})\text{ about the subtree CoM into DOF-space generalized force)}$$
+  # </md>
   cdof = cdof_in[worldid, dofid]
   rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
   jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
@@ -231,12 +243,18 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d[float]):
     d: The data object containing the current state and output arrays (device).
     qfrc: Total applied force mapped to dof space.
   """
+  # <md>
+  # $$\tau \mathrel{+}= \sum_{b} J_b^{\top}\, f^{\text{xfrc}}_b\quad\text{(user-applied Cartesian body wrenches }\texttt{xfrc\_applied}\text{ accumulated into generalized force)}$$
+  # </md>
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
 
 @wp.func
 def _decode_pyramid(njmax_in: int, pyramid: wp.array[float], efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
+  # <md>
+  # $$f_n = \sum_i \bigl(p_{2i} + p_{2i+1}\bigr),\qquad f_{t,i} = \mu_i\,\bigl(p_{2i} - p_{2i+1}\bigr)\quad\text{(reconstruct normal+friction force from nonnegative pyramid coordinates }p\ge 0\text{)}$$
+  # </md>
   force = wp.spatial_vector()
 
   if condim == 1:
@@ -278,6 +296,9 @@ def contact_force_fn(
   to_world_frame: bool,
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
+  # <md>
+  # $$f^{\text{con}} = \bigl(f_n,\, f_{t_1},\, \ldots\bigr)\in\mathbb{R}^6\quad\text{(contact-frame wrench: 1st axis normal, remaining axes tangential/torsional up to }\texttt{condim}\text{)}$$
+  # </md>
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   condim = contact_dim_in[contact_id]
   efc_address = contact_efc_address_in[contact_id, 0]
@@ -298,6 +319,9 @@ def contact_force_fn(
 
   if to_world_frame:
     # Transform both top and bottom parts of spatial vector by the full contact frame matrix
+    # <md>
+    # $$f^{\text{world}} = R_c^{\top}\, f^{\text{con}}\quad\text{(rotate torque and force parts from contact frame to world via frame matrix }R_c\text{)}$$
+    # </md>
     t = wp.spatial_top(force) @ contact_frame_in[contact_id]
     b = wp.spatial_bottom(force) @ contact_frame_in[contact_id]
     force = wp.spatial_vector(t, b)
@@ -380,6 +404,9 @@ def contact_force(m: Model, d: Data, contact_ids: wp.array[int], to_world_frame:
 
 @wp.func
 def transform_force(force: wp.vec3, torque: wp.vec3, offset: wp.vec3) -> wp.spatial_vector:
+  # <md>
+  # $$\begin{bmatrix}\tau'\\ f'\end{bmatrix} = \begin{bmatrix}\tau - r\times f\\ f\end{bmatrix}\quad\text{(transport a wrench }(\tau,f)\text{ to a point offset by }r\text{)}$$
+  # </md>
   return wp.spatial_vector(torque - wp.cross(offset, force), force)
 
 
@@ -423,6 +450,9 @@ def jac_dof(
   cdof_ang = wp.spatial_top(cdof)
   cdof_lin = wp.spatial_bottom(cdof)
 
+  # <md>
+  # $$J^{p}_{:,j} = \frac{\partial x}{\partial q_j} = v_j^{\text{lin}} + \omega_j \times (x - c),\qquad J^{r}_{:,j} = \frac{\partial \omega}{\partial \dot q_j} = \omega_j\quad\text{(column }j\text{ of point Jacobian from motion subspace }\texttt{cdof}_j=(\omega_j,v_j^{\text{lin}})\text{; }c=\text{subtree CoM)}$$
+  # </md>
   jacp = cdof_lin + wp.cross(cdof_ang, offset)
   jacr = cdof_ang
 
@@ -559,6 +589,9 @@ def jac_dot_dof(
   # second correction term, account for point translational velocity
   correction2 = wp.cross(wp.spatial_top(cdof), pvel_lin)
 
+  # <md>
+  # $$\dot J^{p}_{:,j} = \dot v_j^{\text{lin}} + \dot\omega_j\times(x-c) + \omega_j\times\dot x,\qquad \dot J^{r}_{:,j} = \dot\omega_j\quad\text{(time-derivative of point Jacobian; }\dot{\texttt{cdof}}_j\text{ via spatial cross product for ball/free quaternion DOFs)}$$
+  # </md>
   jacp = cdof_dot_lin + correction1 + correction2
   jacr = cdof_dot_ang
 

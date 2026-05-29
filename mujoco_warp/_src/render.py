@@ -122,6 +122,9 @@ def cast_ray(
   face_idx = int(-1)
   geom_mesh_id = int(-1)
 
+  # <md>
+  # $$r(t) = o + t\,d,\quad t \ge 0,\qquad o=\text{ray\_origin\_world},\; d=\text{ray\_dir\_world}\;\text{(world-space ray; BVH traversal yields candidate geoms)}$$
+  # </md>
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = int(0)
   ngeom = bvh_ngeom + flex_bvh_ngeom
@@ -241,6 +244,9 @@ def cast_ray(
         if d >= 0.0:
           hit_mesh_id = flexid
 
+    # <md>
+    # $$t^\star = \min_{g}\,\{\,t_g : t_g \ge 0\,\},\qquad n = n_{g^\star}\;\text{(keep nearest valid intersection: depth, surface normal, barycentric }(u,v)\text{)}$$
+    # </md>
     if d >= 0.0 and d < dist:
       dist = d
       normal = n
@@ -452,17 +458,29 @@ def compute_lighting(
   dist_to_light = float(MJ_MAXVAL)
   attenuation = float(1.0)
 
+  # <md>
+  # $$l = \begin{cases} -\hat{d}_{\text{light}} & \text{directional} \\[2pt] \dfrac{p_{\text{light}} - x_{\text{hit}}}{\lVert p_{\text{light}} - x_{\text{hit}}\rVert} & \text{point / spot} \end{cases}\qquad\text{(unit direction from surface toward light)}$$
+  # </md>
   if lighttype == 1:  # directional light
     L = wp.normalize(-lightdir)
   else:
     L, dist_to_light = math.normalize_with_norm(lightpos - hitpoint)
+    # <md>
+    # $$a = \frac{1}{1 + 0.02\,\lVert p_{\text{light}} - x_{\text{hit}}\rVert^{2}}\qquad\text{(inverse-quadratic distance attenuation)}$$
+    # </md>
     attenuation = 1.0 / (1.0 + 0.02 * dist_to_light * dist_to_light)
     if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
+      # <md>
+      # $$s = \operatorname{clamp}\!\left(\frac{(-l)\cdot \hat{s} - \cos\theta_{\text{out}}}{\cos\theta_{\text{in}} - \cos\theta_{\text{out}}},\,0,\,1\right),\qquad a \leftarrow a\,s\quad\text{(spot cone falloff, }\hat{s}=\text{spot axis)}$$
+      # </md>
       cos_theta = wp.dot(-L, spot_dir)
       spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) / (0.95 - 0.85)))
       attenuation = attenuation * spot_factor
 
+  # <md>
+  # $$n\cdot l = \max(0,\; n \cdot l)\qquad\text{(Lambertian diffuse cosine factor; }n\text{ unit surface normal)}$$
+  # </md>
   ndotl = wp.max(0.0, wp.dot(normal, L))
   if ndotl == 0.0:
     return light_contribution
@@ -472,6 +490,9 @@ def compute_lighting(
   if use_shadows and lightcastshadow:
     # Nudge the origin slightly along the surface normal to avoid
     # self-intersection when casting shadow rays
+    # <md>
+    # $$o_{\text{shadow}} = x_{\text{hit}} + \varepsilon\, n,\qquad r_{\text{shadow}}(t)=o_{\text{shadow}} + t\,l,\; t\in(0,\,\lVert p_{\text{light}}-x_{\text{hit}}\rVert)\quad\text{(offset along }n\text{ avoids self-shadow acne)}$$
+    # </md>
     eps = 1.0e-4
     shadow_origin = hitpoint + normal * eps
     # Distance-limited shadows: cap by dist_to_light (for non-directional)
@@ -509,6 +530,9 @@ def compute_lighting(
     if shadow_hit:
       visible = 0.3
 
+  # <md>
+  # $$c_{\text{light}} = (n\cdot l)\,a\,V,\qquad V \in \{1,\,0.3\}\quad\text{(diffuse}\times\text{attenuation}\times\text{visibility; }V=0.3\text{ if shadowed)}$$
+  # </md>
   return ndotl * attenuation * visible
 
 
@@ -619,6 +643,9 @@ def render(m: Model, d: Data, rc: RenderContext):
       img_h = cam_res[cam_idx][1]
       px = rayid_local % img_w
       py = rayid_local // img_w
+      # <md>
+      # $$d_{\text{cam}} = \text{normalize}\!\begin{pmatrix} x_{\text{img}} \\ y_{\text{img}} \\ -z_{\text{near}} \end{pmatrix},\qquad x_{\text{img}} = \frac{p_x - c_x}{f_x}\,z_{\text{near}},\; y_{\text{img}} = \frac{p_y - c_y}{f_y}\,z_{\text{near}}\quad\text{(pinhole back-projection; camera looks down }-Z)$$
+      # </md>
       ray_dir_local_cam = compute_ray(
         cam_projection[mujoco_cam_id],
         cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id],
@@ -631,6 +658,9 @@ def render(m: Model, d: Data, rc: RenderContext):
         wp.static(rc.znear),
       )
 
+    # <md>
+    # $$d = R_{\text{cam}}\, d_{\text{cam}},\qquad o = x_{\text{cam}}\quad\text{(map ray from camera frame to world via }[R\,|\,t]\text{; }o\text{ is camera center)}$$
+    # </md>
     ray_dir_world = cam_xmat_in[worldid, mujoco_cam_id] @ ray_dir_local_cam
     ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
 
@@ -672,12 +702,18 @@ def render(m: Model, d: Data, rc: RenderContext):
       # In camera-local coordinates, the optical axis is -Z. The Z-component of the
       # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
       # between the ray and the optical axis.
+      # <md>
+      # $$z = t^\star \cos\!\angle(d_{\text{cam}}, -\hat{Z}) = -\,t^\star\, d_{\text{cam},z}\quad\text{(planar depth: Euclidean distance projected onto optical axis }-Z)$$
+      # </md>
       depth_out[worldid, depth_adr[cam_idx] + rayid_local] = dist * (-ray_dir_local_cam[2])
 
     if not render_rgb[cam_idx]:
       return
 
     # Shade the pixel
+    # <md>
+    # $$x_{\text{hit}} = o + t^\star\, d\quad\text{(world-space surface point at nearest intersection)}$$
+    # </md>
     hit_point = ray_origin_world + ray_dir_world * dist
 
     if geom_id == -2:
@@ -719,6 +755,9 @@ def render(m: Model, d: Data, rc: RenderContext):
     len_n = wp.length(normal)
     n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
     n = wp.normalize(n)
+    # <md>
+    # $$h = \tfrac{1}{2}(n_z + 1)\in[0,1],\qquad a_{\text{amb}} = h\,a_{\text{sky}} + (1-h)\,a_{\text{ground}},\qquad c \mathrel{+}= \tfrac{1}{2}\,(c_{\text{base}} \odot a_{\text{amb}})\quad\text{(hemispheric ambient term)}$$
+    # </md>
     hemispheric = 0.5 * (n[2] + 1.0)
     ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
     result = 0.5 * wp.cw_mul(base_color, ambient_color)
@@ -756,8 +795,14 @@ def render(m: Model, d: Data, rc: RenderContext):
         normal,
         hit_point,
       )
+      # <md>
+      # $$c = c_{\text{amb}} + c_{\text{base}} \sum_{k} c_{\text{light},k},\qquad c_{\text{light},k} = (n\cdot l_k)\,a_k\,V_k\quad\text{(accumulate diffuse contribution over all lights)}$$
+      # </md>
       result = result + base_color * light_contribution
 
+    # <md>
+    # $$c_{\text{out}} = \operatorname{clamp}(c,\,0,\,1)\quad\text{(saturate radiance before 8-bit RGBA packing)}$$
+    # </md>
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 

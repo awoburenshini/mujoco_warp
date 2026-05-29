@@ -729,6 +729,7 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext):
 
 
 def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
+  # <md>
   # Narrowphase dispatcher. broadphase already wrote candidate pairs into ctx.collision_pair[0:d.ncollision];
   # here we hand each candidate to the algorithm specified by MJ_COLLISION_TABLE (geom-type dispatch table).
   #
@@ -737,16 +738,21 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   # This is a STATIC python dict (module-level, line 42) of 32 entries — NOT geometry data, just an
   # algorithm dispatch table. PRIMITIVE = closed-form solver (sphere-sphere, plane-capsule, ...);
   # CONVEX = GJK + EPA iterative solver on general convex shapes (operates on m.mesh_poly* data for meshes).
+  # </md>
   collision_table = MJ_COLLISION_TABLE
+  # <md>
   # $$\textsf{NATIVECCD disabled} \;\Longrightarrow\; (\text{BOX},\text{BOX}) \leftarrow \text{PRIMITIVE}\quad\text{(falls back to SAT instead of GJK)}$$
+  # </md>
   if m.opt.disableflags & DisableBit.NATIVECCD:
     collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
 
+  # <md>
   # Partition the table's keys by algorithm so each downstream kernel only sees its own type combinations.
   # Both lists are rebuilt every call but are content-stable (~22 + ~10 entries; O(32) Python work, < 5 µs),
   # and they get baked into the CUDA graph on first capture so subsequent steps skip this entirely.
   # $$\mathcal{K}_{\text{conv}} = \{(t_i,t_j):\,\textsf{MJ\_COLLISION\_TABLE}(t_i,t_j) = \text{CONVEX}\}$$
   # $$\mathcal{K}_{\text{prim}} = \{(t_i,t_j):\,\textsf{MJ\_COLLISION\_TABLE}(t_i,t_j) = \text{PRIMITIVE}\}$$
+  # </md>
   convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
   primitive_pairs = [key for key, value in collision_table.items() if value == CollisionType.PRIMITIVE]
 
@@ -759,11 +765,15 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   convex_narrowphase(m, d, ctx, convex_pairs)
   primitive_narrowphase(m, d, ctx, primitive_pairs)
 
+  # <md>
   # $$\text{SDF geom present}\;\Longrightarrow\;\text{run signed-distance-field narrowphase (root-find }\phi=0)$$
+  # </md>
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
 
+  # <md>
   # $$n_{\text{flex}}>0\;\Longrightarrow\;\text{run deformable-flex narrowphase (per-element)}$$
+  # </md>
   if m.nflex > 0:
     flex_narrowphase(m, d)
 
@@ -786,28 +796,40 @@ def collision(m: Model, d: Data):
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nacon` is 0.
   """
+  # <md>
   # $$\text{disableflags}\,\&\,(\text{CONSTRAINT}\,|\,\text{CONTACT})\neq 0\;\;\lor\;\;n_{\text{con,max}}=0\;\;\Longrightarrow\;\;n_{\text{con}}\leftarrow 0,\;\text{return}$$
+  # </md>
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     d.nacon.zero_()
     return
 
+  # <md>
   # $$\text{ctx}=\bigl(\text{pair\_geom},\,\text{pair\_count},\,\text{aabb}_{i},\,\dots\bigr)\quad\text{(per-launch scratch buffers, capacity }n_{\text{con,max}}\text{)}$$
+  # </md>
   ctx = create_collision_context(d.naconmax)
 
+  # <md>
   # $$n_{\text{con}}\leftarrow 0,\qquad n_{\text{collision}}\leftarrow 0\quad\text{(reset narrow/broadphase counters)}$$
+  # </md>
   wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
 
+  # <md>
   # $$\mathcal{P}_{\text{cand}}=\bigl\{(i,j):\,\widehat{B}_i\cap\widehat{B}_j\neq\varnothing,\;i<j,\;\text{contype}_i\,\&\,\text{conaffinity}_j\bigr\}\;\subset\;\binom{n_{\text{geom}}}{2}$$
   # $$\text{NXN}: O(n_{\text{geom}}^2)\text{ pairwise AABB/OBB test}\quad|\quad\text{SAP}: \text{project onto axis}\to\text{sort}\to\text{interval-overlap sweep}$$
+  # </md>
   if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d, ctx)
   else:
     sap_broadphase(m, d, ctx)
 
+  # <md>
   # $$\forall(i,j)\in\mathcal{P}_{\text{cand}}:\;\;(p_k,\,n_k,\,\phi_k,\,\mu_k)_{k=1}^{n^{ij}_c}=\mathrm{narrow}_{\,\text{type}(g_i,g_j)}(g_i,g_j)$$
   # $$\text{dispatch by }\textsf{MJ\_COLLISION\_TABLE}:\;\;\{\text{PRIMITIVE (closed-form)},\;\text{CONVEX (GJK/EPA)},\;\text{SDF},\;\text{FLEX}\}$$
+  # </md>
   _narrowphase(m, d, ctx)
 
+  # <md>
   # $$\mathcal{C}\leftarrow\bigl\{c\in\mathcal{C}:\,\text{user\_filter}(c)=\text{true}\bigr\}\quad\text{(optional callback to drop unwanted contacts)}$$
+  # </md>
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)

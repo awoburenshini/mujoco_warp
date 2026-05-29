@@ -519,48 +519,71 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
+  # <md>
   # $$G_i(q) = G_{p(i)}(q)\,G^{\text{joint}}_i(q_i),\quad G_i(q) := \begin{bmatrix} R_i & x_i \\ 0 & 1 \end{bmatrix}\in SE(3),\qquad \forall\, i\in\text{bodies}$$
-  
+  # </md>
   smooth.kinematics(m, d)
 
+  # <md>
   # $$\tilde{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x^{I}_j}{\sum_{j\in\mathcal{S}(i)} m_j},\qquad \mathcal{I}^{\text{world}}_j\big|_{\tilde{x}_j}\;\text{(per-body 6}\times\text{6 spatial inertia at subtree CoM)}$$
+  # </md>
   
   smooth.com_pos(m, d)
 
+  # <md>
   # $$x_c = x_{b(c)} + R_{b(c)}\, p^{\text{local}}_c,\qquad R_c = R_{b(c)}\, R^{\text{local}}_c\quad\text{(cameras and lights inherit body transforms)}$$
+  # </md>
   smooth.camlight(m, d)
 
+  # <md>
   # $$v_k = x_{b(k)} + R_{b(k)}\, v^{\text{rest}}_k\quad\text{(deformable mesh vertices)}$$
+  # </md>
   smooth.flex(m, d)
 
+  # <md>
   # $$L_t(q)=\sum_{k}\lVert p_{k+1}-p_{k}\rVert,\qquad J_t=\frac{\partial L_t}{\partial q}$$
+  # </md>
   
   smooth.tendon(m, d)
 
+  # <md>
   # $$M(q) = \sum_{b} J^{I,\text{world}\,\top}_b\,\mathcal{I}^{\text{world}}_b\, J^{I,\text{world}}_b \;\in\; \mathbb{R}^{n_v\times n_v}\quad\text{(Composite Rigid Body algorithm; see docs/inertia.md)}$$
+  # </md>
   
   smooth.crb(m, d)
 
+  # <md>
   # $$M(q) \leftarrow M(q) + J_t^{\top}\, A_t\, J_t\qquad\text{(reflected tendon armature added in place)}$$
+  # </md>
   smooth.tendon_armature(m, d)
 
   if factorize:
+    # <md>
     # $$M(q) = L\, D\, L^{\top}\quad\text{(sparse } LDL^{\top}\text{, or dense Cholesky)}$$
+    # </md>
     smooth.factor_m(m, d)
 
   if m.opt.run_collision_detection:
+    # <md>
     # $$\mathcal{C}=\bigl\{(p_k,\,n_k,\,\phi_k,\,\mu_k)\bigr\}_{k=1}^{n_{\text{con}}}\qquad\text{broadphase}\to\text{narrowphase}$$
+    # </md>
     collision_driver.collision(m, d)
 
+  # <md>
   # $$J(q)\in\mathbb{R}^{n_{\text{efc}}\times n_v},\quad a_{\text{ref}},\;\mathbf{R}_{\text{efc}}\qquad\text{(constraint Jacobian, reference acc, regularization)}$$
+  # </md>
   constraint.make_constraint(m, d)
 
   # TODO(team): remove False after island features are more complete
   if False and not (m.opt.disableflags & DisableBit.ISLAND):
+    # <md>
     # $$\text{efc-graph}\;\longrightarrow\;\mathcal{P}_1\sqcup\mathcal{P}_2\sqcup\cdots\sqcup\mathcal{P}_K\quad\text{(disjoint constraint islands; }\mathcal{P}\text{ to avoid clash with spatial inertia }\mathcal{I}\text{)}$$
+    # </md>
     island.island(m, d)
 
+  # <md>
   # $$\ell_u(q),\qquad \frac{\partial \ell_u}{\partial q}\quad\text{(actuator length and moment arm)}$$
+  # </md>
   smooth.transmission(m, d)
 
 
@@ -1021,14 +1044,22 @@ def forward(m: Model, d: Data):
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
       m.callback.control(m, d)
+  # <md>
   # $$f_u = g_u(\ell_u,\dot\ell_u)\,u + b_u(\ell_u,\dot\ell_u),\qquad \tau_{\text{act}} = J_u^{\top} f_u\quad\text{(actuator force} \to \text{generalized torque)}$$
+  # </md>
   fwd_actuation(m, d)
+  # <md>
   # $$\tau_{\text{smooth}} = \tau_{\text{passive}} + \tau_{\text{actuator}} + \tau_{\text{applied}} - C(q,\dot q),\qquad \ddot q_{\text{smooth}} = M^{-1}\,\tau_{\text{smooth}}\quad\text{(unconstrained acceleration via }LDL^{\top}\text{)}$$
+  # </md>
   fwd_acceleration(m, d, factorize=True)
 
+  # <md>
   # $$\ddot q^{*} \;=\; \arg\min_{\ddot q}\; \tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}}) \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(J_c\ddot q - a^{\text{ref}}_c;\, D_c,\, \mu_c\big)\quad\text{(unconstrained Newton-CG on a Moreau envelope of the friction cone }\mathcal{K}_c=\{\|\lambda_t\|\leq\mu_c\lambda_n,\ \lambda_n\geq 0\}\text{; }s_{\mathcal{K}_c}\text{ is }C^1\text{ piecewise: }0\text{ inside cone, }\tfrac{D_n}{2(1+\mu_c^2)}(a_n-\|\mu_t a_t\|)^2\text{ near boundary, }\tfrac12\sum_i D_i a_i^2\text{ in polar cone)}$$
+  # </md>
   solver.solve(m, d)
+  # <md>
   # $$y^{\text{acc}} = h^{\text{acc}}(q,\dot q,\ddot q,\,f^{\text{contact}})\quad\text{(force/torque/accelerometer/contact-force sensors)}$$
+  # </md>
   sensor.sensor_acc(m, d)
 
 

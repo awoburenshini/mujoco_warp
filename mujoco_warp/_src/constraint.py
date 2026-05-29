@@ -2134,11 +2134,13 @@ def _contact_elliptic(
     else:
       dofid = int(nv - 1)
 
+    # <md>
     # For each contributing dof $k$ (= dofid), compute the contact-frame row entry
     # $$ J^c_{c,a,k} = F_{c,a}^\top\,(J^{p_c}_{b_2,k} - J^{p_c}_{b_1,k}). $$
     # `support.jac_dof` evaluates $J^{p_c}_{b,k} = T^{p_c}_b\,S_k$ on the fly (see contact.md §3b):
     #   jacp = $\bar\omega_k \times (p_c - a_k) + \bar v_k$     (linear part — used for axes 0,1,2)
     #   jacr = $\bar\omega_k$  (angular part — **[TORSION/ROLLING — only used for axes 3,4,5; ignore for condim ≤ 3]**)
+    # </md>
     while True:
       if is_sparse:
         if nnz >= rownnz:
@@ -2362,8 +2364,10 @@ def make_constraint(m: types.Model, d: types.Data):
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
+      # <md>
       # Connect equality: two body-attached points whose world-frame positions $p_1(q), p_2(q)$ must coincide.
       # $$ p_1(q) - p_2(q) = 0 \in \mathbb{R}^3, \quad \text{3 rows per active connect} $$
+      # </md>
       wp.launch(
         _equality_connect,
         dim=(d.nworld, m.eq_connect_adr.size),
@@ -2417,8 +2421,10 @@ def make_constraint(m: types.Model, d: types.Data):
           efc_nnz,
         ],
       )
+      # <md>
       # Weld equality: rigidly fix relative pose between two bodies (position + orientation).
       # $$ (p_1 - p_2,\; 2\,\operatorname{vec}(R_1 R_2^{-1})) = 0 \in \mathbb{R}^6, \quad \text{6 rows per active weld} $$
+      # </md>
       wp.launch(
         _equality_weld,
         dim=(d.nworld, m.eq_wld_adr.size),
@@ -2474,8 +2480,10 @@ def make_constraint(m: types.Model, d: types.Data):
           efc_nnz,
         ],
       )
+      # <md>
       # Joint equality: couple two scalar joint coordinates via a 4th-degree polynomial $f$ (`eq_data`).
       # $$ q_{a} - q_{a}^{0} - f\!\big(q_{b} - q_{b}^{0}\big) = 0, \quad \text{1 row per active joint-eq} $$
+      # </md>
       wp.launch(
         _equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
@@ -2518,8 +2526,10 @@ def make_constraint(m: types.Model, d: types.Data):
           efc_nnz,
         ],
       )
+      # <md>
       # Tendon equality: couple two tendon lengths via polynomial $f$ (or lock one to a target length).
       # $$ \ell_{t_a}(q) - \ell^{0}_{t_a} - f\!\big(\ell_{t_b}(q) - \ell^{0}_{t_b}\big) = 0, \quad \text{1 row per active tendon-eq} $$
+      # </md>
       wp.launch(
         _equality_tendon,
         dim=(d.nworld, m.eq_ten_adr.size),
@@ -2565,8 +2575,10 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
+      # <md>
       # Flex-edge equality: preserve rest length of every edge in a flex (soft-body) mesh.
       # $$ \|v_a(q) - v_b(q)\| - \ell^{0}_{ab} = 0 \quad \forall (a,b) \in \text{edges}; \quad \text{1 row per edge} $$
+      # </md>
       wp.launch(
         _equality_flex(m.is_sparse),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
@@ -2611,11 +2623,13 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
+      # <md>
       # NOTE: "friction loss" here is the JOINT's own dry friction (bearing stiction),
       # NOT contact-surface friction. Contact-surface friction lives in `_contact_*` below
       # and is coupled to the normal force; this one is a fixed box bound on $\lambda$.
       # Dof Coulomb friction loss: dry-friction torque resists joint motion, capped by $\mu_k$.
       # $$ J_i \ddot q - a^{\text{ref}}_i = 0, \quad \lambda_i \in [-\mu_k,\, \mu_k]; \quad J_i = e_k^\top, \quad \text{1 row per friction dof} $$
+      # </md>
       wp.launch(
         _friction_dof,
         dim=(d.nworld, m.nv),
@@ -2651,9 +2665,11 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
+      # <md>
       # NOTE: tendon's OWN dry friction (cable rubbing against guide points), not surface contact.
       # Tendon Coulomb friction loss: same as dof but along a tendon, $J_i = \partial \ell_t / \partial q$.
       # $$ \lambda_i \in [-\mu_t,\, \mu_t]; \quad \text{1 row per friction tendon} $$
+      # </md>
       wp.launch(
         _friction_tendon,
         dim=(d.nworld, m.ntendon),
@@ -2695,8 +2711,10 @@ def make_constraint(m: types.Model, d: types.Data):
 
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
+      # <md>
       # Ball-joint angle limit: rotation magnitude $\theta = 2\arccos(q_w)$ cannot exceed $\theta_{\max}$.
       # $$ \theta_{\max} - \theta(q) \geq 0, \quad \lambda \geq 0; \quad \text{1 row per active limit} $$
+      # </md>
       wp.launch(
         _limit_ball,
         dim=(d.nworld, m.jnt_limited_ball_adr.size),
@@ -2737,8 +2755,10 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
+      # <md>
       # Slide or hinge joint range limit (unilateral on the violated side).
       # $$ q - q_{\min} \geq 0 \;\;\text{or}\;\; q_{\max} - q \geq 0, \quad \lambda \geq 0; \quad \text{1 row per active limit} $$
+      # </md>
       wp.launch(
         _limit_slide_hinge,
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
@@ -2779,8 +2799,10 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
+      # <md>
       # Tendon length limit: tendon $\ell_t(q)$ must stay within $[\ell_{\min}, \ell_{\max}]$.
       # $$ \ell_t - \ell_{\min} \geq 0 \;\;\text{or}\;\; \ell_{\max} - \ell_t \geq 0, \quad \lambda \geq 0; \quad J_i = \partial \ell_t / \partial q $$
+      # </md>
       wp.launch(
         _limit_tendon,
         dim=(d.nworld, m.tendon_limited_adr.size),
@@ -2830,10 +2852,12 @@ def make_constraint(m: types.Model, d: types.Data):
       # here is COUPLED to the normal force ($\|\lambda_t\| \leq \mu \lambda_n$), not a
       # fixed box bound.
       if m.opt.cone == types.ConeType.PYRAMIDAL:
+        # <md>
         # Pyramidal cone: linearize the friction circle into $2(\text{condim}-1)$ unilateral pyramid edges.
         # Each edge row is a normal-plus-scaled-tangent combination of the relative-velocity Jacobian:
         # $$ J_i = (n \pm \mu^{(a)} t^{(a)})^\top (J^{p_c}_{b_2} - J^{p_c}_{b_1}), \quad \lambda_i \geq 0; \quad 2(\text{condim}-1) \text{ rows per contact} $$
         # See [contact.md](../../contact.md) for the soft-QP barrier $\tfrac12 D_i \min(\,J_i\ddot q - a^{\text{ref}}_i,\,0)^2$.
+        # </md>
         wp.launch(
           _contact_pyramidal,
           dim=(d.naconmax, m.nmaxpyramid),
@@ -2893,10 +2917,12 @@ def make_constraint(m: types.Model, d: types.Data):
           ],
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC:
+        # <md>
         # Elliptic (SOC) cone: keep the Coulomb cone exactly.
         # 1 unilateral normal row + $(\text{condim}-1)$ bilateral tangent rows with cone-bounded multiplier:
         # $$ J^c_n \ddot q - a^{\text{ref}}_n \geq 0,\; \lambda_n \geq 0; \quad J^c_t \ddot q = 0,\; \|(\lambda_t^1, \lambda_t^2)\| \leq \mu_s \lambda_n $$
         # condim rows per contact (no facet linearization). See [contact.md](../../contact.md).
+        # </md>
         wp.launch(
           _contact_elliptic,
           dim=(d.naconmax, m.nmaxcondim),

@@ -526,6 +526,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 
   # <md>
   # $$\tilde{x}_i = \frac{\sum_{j\in\mathcal{S}(i)} m_j\, x^{I}_j}{\sum_{j\in\mathcal{S}(i)} m_j},\qquad \mathcal{I}^{\text{world}}_j\big|_{\tilde{x}_j}\;\text{(per-body 6}\times\text{6 spatial inertia at subtree CoM)}$$
+  #
   # </md>
   
   smooth.com_pos(m, d)

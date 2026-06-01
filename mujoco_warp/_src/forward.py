@@ -491,7 +491,16 @@ def rungekutta4(m: Model, d: Data):
 
 @event_scope
 def implicit(m: Model, d: Data):
-  """Integrates fully implicit in velocity."""
+  """Integrates fully implicit in velocity (IMPLICITFAST).
+
+  Re-solves the acceleration against the velocity-implicit inertia
+  $\\tilde M = M - h\\,\\partial\\tau_{\\text{smooth}}/\\partial\\dot q$ so that velocity-dependent
+  smooth forces (joint/tendon damping, springs, AFFINE actuators) are integrated implicitly,
+  then advances the state. See docs/implicit_derivation_notes.md.
+  """
+  # the implicit re-solve is only needed when some smooth force has a non-zero velocity Jacobian
+  # (damping / spring / AFFINE actuator). Otherwise tilde M = M, qacc already equals the constrained
+  # solve, and we advance with d.qacc directly.
   if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     if m.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
@@ -500,11 +509,23 @@ def implicit(m: Model, d: Data):
       qDeriv = wp.empty(d.qM.shape, dtype=float)
       qLD = wp.empty(d.qM.shape, dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
+    # <md>
+    # $$\tilde M \;=\; M \;-\; h\,\frac{\partial \tau_{\text{smooth}}}{\partial \dot q}\quad\text{(velocity-implicit inertia; joint/tendon damping and AFFINE actuator gain/bias Jacobians added to }M\text{; assembled in }\texttt{derivative.deriv\_smooth\_vel}\text{)}$$
+    # </md>
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
+    # <md>
+    # $$\tilde M = L\, D\, L^{\top},\qquad \ddot q \;=\; \tilde M^{-1}\,\underbrace{(\tau_{\text{smooth}} + \tau_{\text{constraint}})}_{\texttt{efc.Ma}\,=\,M\ddot q^{*}}\quad\text{(re-solve acceleration with the implicit inertia; RHS is the converged total force from }\texttt{solver.solve}\text{)}$$
+    # </md>
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    # <md>
+    # $$\dot q \leftarrow \dot q + h\,\ddot q,\qquad q \leftarrow q_0 + h\,N(q^\theta)\,\dot q\quad\text{(semi-implicit advance of velocity, position and time; see }\_advance\text{)}$$
+    # </md>
     _advance(m, d, qacc)
   else:
+    # <md>
+    # $$\tilde M = M \;\Rightarrow\; \ddot q = \ddot q^{*}\quad\text{(no velocity-dependent smooth force: advance with the constrained acceleration }\ddot q^{*}\text{ directly)}$$
+    # </md>
     _advance(m, d, d.qacc)
 
 
@@ -1055,7 +1076,20 @@ def forward(m: Model, d: Data):
   fwd_acceleration(m, d, factorize=True)
 
   # <md>
-  # $$\ddot q^{*} \;=\; \arg\min_{\ddot q}\; \tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}}) \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(J_c\ddot q - a^{\text{ref}}_c;\, D_c,\, \mu_c\big)\quad\text{(unconstrained Newton-CG on a Moreau envelope of the friction cone }\mathcal{K}_c=\{\|\lambda_t\|\leq\mu_c\lambda_n,\ \lambda_n\geq 0\}\text{; }s_{\mathcal{K}_c}\text{ is }C^1\text{ piecewise: }0\text{ inside cone, }\tfrac{D_n}{2(1+\mu_c^2)}(a_n-\|\mu_t a_t\|)^2\text{ near boundary, }\tfrac12\sum_i D_i a_i^2\text{ in polar cone)}$$
+  # $$
+  # \ddot q^{*} \;=\; \arg\min_{\ddot q}\; \tfrac12 (\ddot q - \ddot q_{\text{smooth}})^{\top} M\,(\ddot q - \ddot q_{\text{smooth}}) \;+\; \sum_{c}\, s_{\mathcal{K}_c}\!\big(J_c\ddot q - a^{\text{ref}}_c;\, D_c,\, \mu_c\big)
+  # $$
+  # Unconstrained Newton-CG on a Moreau envelope of the friction cone
+  # $\mathcal{K}_c=\{\|\lambda_t\|\leq\mu_c\lambda_n,\ \lambda_n\geq 0\}$. With residual $a = J_c\ddot q - a^{\text{ref}}_c$,
+  # $N = \mu_c a_n$, $T = \|\mu_t a_t\|$, the penalty $s_{\mathcal{K}_c}$ is $C^1$ piecewise:
+  # $$
+  # s_{\mathcal{K}_c}(a) \;=\;
+  # \begin{cases}
+  # 0, & N \ge \mu_c T \quad\text{(top: separating / no contact)}\\[4pt]
+  # \dfrac{D_n}{2(1+\mu_c^2)}\big(a_n - \|\mu_t a_t\|\big)^2, & \text{otherwise}\quad\text{(middle: cone boundary / sliding)}\\[4pt]
+  # \tfrac12 \sum_i D_i\, a_i^2, & \mu_c N + T \le 0 \quad\text{(bottom: deep penetration / sticking)}
+  # \end{cases}
+  # $$
   # </md>
   solver.solve(m, d)
   # <md>

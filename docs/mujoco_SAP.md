@@ -139,3 +139,54 @@ $$
 \mathcal{F}^* = \{[y_t, y_n] \in \mathbb{R}^3 :  \| y_t \| \leq \frac{1}{\mu} y_n \}
 \end{aligned}
 $$
+
+$$
+\begin{aligned}
+L(v,\sigma, \gamma) &= \frac12 \| v - v^* \|^2_A + \frac12 \|\sigma\|^2_R - \gamma^\top g
+\end{aligned}
+$$
+
+Optimality condition with respect to $v$ and $\sigma$:
+$$
+\begin{aligned}
+0 &= \frac{\partial L}{\partial v} = A (v - v^*) - J^\top \gamma\\
+0 &= \frac{\partial L}{\partial \sigma} = R \sigma - R^\top \gamma
+\end{aligned}
+$$
+So we have
+$$
+\begin{aligned}
+A (v - v^*) &= J^\top \gamma\\
+\sigma &= \gamma
+\end{aligned}
+$$
+
+now, put $\gamma$ back to the Lagrangian, we have
+$$
+\begin{aligned}
+L(v, \sigma, \gamma) &= \frac12 (v - v^*)^\top A (v - v^*) + \frac12 \|\sigma\|^2_R - \gamma^\top (J v - \hat{v}_c + R \sigma)\\
+&= \frac12 \gamma^\top J A^{-1} J^\top \gamma + \frac12 \gamma^\top R \gamma - \gamma^\top R \sigma + \gamma^\top \hat{v}_c - \gamma^\top J(v^* + A^{-1} J^\top \gamma) \\
+&= -\frac12 \gamma^\top (J A^{-1} J^\top + R) \gamma + \gamma^\top \hat{v}_c - \gamma^\top v_c^*\\
+&= -\frac12 \gamma^\top (J A^{-1} J^\top + R) \gamma + \gamma^\top (\hat{v}_c - v_c^*)
+\end{aligned}
+$$
+So, the dual problem is
+$$
+\begin{aligned}
+\gamma^* &= \arg\min_{\gamma} \frac12 \gamma^\top (J A^{-1} J^\top + R) \gamma + \gamma^\top (v^*_c - \hat{v}_c)
+\end{aligned}
+$$
+And we have
+$$
+\begin{aligned}
+\gamma_i(v_{c,i}) &= P_{\mathcal{F}_i}(y_i(v_{c,i}))\\
+&= \arg\min_{\gamma_i \in \mathcal{F}_i} \frac12 (\gamma_i - y_i) R_i (\gamma_i - y_i)\\
+\end{aligned}
+$$
+
+Finally, we can rewrite the primal problem as
+$$
+\begin{aligned}
+\min_{v} l_p(v) &= \frac{1}{2} \| v - v^* \|^2_A + \frac{1}{2} \| P_{\mathcal{F}}(y(v_c)) \|^2_R\\
+\end{aligned}
+$$

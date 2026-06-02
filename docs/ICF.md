@@ -63,7 +63,7 @@ $$
 So, $\frac{\partial f_n}{\partial \phi} \leq 0, \frac{\partial f_n}{\partial v_n} \leq 0$.
 
 
-**Friction force**
+**Friction force （Exact modeling）**
 
 $$
 \begin{aligned}
@@ -87,10 +87,10 @@ $$
 
 ...
 
-### Lagged model
+### Lagged friction model
 $$
 \begin{aligned}
-l(v_c) = l_t(v_t) + l_n(v_n)
+l_c(v_c) = l_t(v_t) + l_n(v_n)
 \end{aligned}
 $$
 the $l_n$ defined in III:B, and $l_t$ is defined as
@@ -101,3 +101,18 @@ l_t(v_t) &= \gamma_{n0} ( \sqrt{\|\mu\cdot v_t\|^2 + \epsilon_s^2} - \epsilon_s)
 $$
 
 When $\mu$ is a scalar, which is the isotropic friction. When $\mu$ is a SPD matrix, which is the anisotropic friction.
+
+$$
+\begin{aligned}
+l_n(v_n) 
+&= \delta t \cdot k \int^{\bar{v}_n}_{\hat{v}} \phi(s)ds - \underbrace{\delta t \cdot k d \int^{\bar{v}_n}_{\hat{v}} \phi(s) s ds}_{\text{damping term}}\\
+&= \frac12 k \phi(\bar v_n)^2 - \tfrac12 kd\Big(\phi_0 + \tfrac23\delta t \bar v_n\Big)\delta t  \bar v_n^2 + C
+\\
+\bar{v}_n &= \min(v_n, -\frac{\phi_0}{\delta t}, \frac{1}{d})\\
+\hat{v} &= \min(-\frac{\phi_0}{\delta t}, \frac{1}{d})\\
+\phi(s) &= \phi_0 + \delta t\cdot s 
+\end{aligned}
+$$
+
+> Note: $v_n > 0$ separating, $v_n <0$ approaching (paper convention).\
+> Contact/force active for $v_n < \hat{v}$; $v_n \geq \hat{v}$ means broken, $l_n = 0$.

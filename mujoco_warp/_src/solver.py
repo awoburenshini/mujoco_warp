@@ -3561,24 +3561,30 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   #     Builds $mv = M s$ (`support.mul_m`) and $jv = J s$, then minimizes the 1-D per-row quadratic cost
   #     either in parallel over a fixed α-grid (`_linesearch_parallel`) or by an exact bracketing/Newton
   #     sweep (`_linesearch_iterative`). The step on $\ddot q$ is applied *inside* this call.
+  #   
   #
   #   **(B) constraint refresh**  — `_update_constraint` ([solver.py:2147](solver.py)):
   #     recompute $\text{Jaref}=J\ddot q-a^{\text{ref}}$, cost $\phi$, per-row force $\lambda\!\to\!$`d.efc.force`,
   #     active-set state, and $\nabla\phi = M(\ddot q-\ddot q_{\text{smooth}}) + J_{\mathcal{A}}^{\top}D_{\mathcal{A}}\text{Jaref}_{\mathcal{A}}$.
+  #   
   #
   #   **(C) HESSIAN ASSEMBLY + CHOLESKY SOLVE**  — `_update_gradient` ([solver.py:2911](solver.py)):
   #     *assemble* $H = M + J_{\mathcal{A}}^{\top}D_{\mathcal{A}}J_{\mathcal{A}}\,(+\,J^{\top}C(\text{Jaref})J$ for elliptic cone$)$
   #         via `update_gradient_JTDAJ_dense_tiled` (+ `update_gradient_JTCJ_dense`) — this is the matrix build;
+  #   
   #     *solve* $H\,M_g = \nabla\phi$ by dense Cholesky in `_cholesky_factorize_solve` ([solver.py:2818](solver.py),
   #         `wp.tile_cholesky` + `wp.tile_cholesky_solve`) → Newton direction $-M_g$.
   #     (CG instead skips assembly entirely: $M_g = M^{-1}\nabla\phi$ via `smooth.solve_m`, reusing the LDLᵀ of $M$.
   #      The Newton path may use `_update_gradient_incremental` to refactor only the changed rows of $H$.)
+  #   
   #
   #   **(D) direction update**  — `solve_search_update`: Newton $s \leftarrow -M_g$;
   #     CG $s \leftarrow -M_g + \beta\,s$ with $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$ (Polak-Ribière, `solve_beta`).
+  #   
   #
   #   **(E) converge**  — `solve_done`: if $\sqrt{\nabla\phi^{\top}M_g}/\bar m < \text{tol}$ or $|\Delta\phi|/\bar m < \text{tol}$ or
   #     $n_{\text{iter}}\!\ge\!\text{iterations}$, set $\texttt{done}$ and decrement `nsolving`.
+  #
   # </md>
 
 

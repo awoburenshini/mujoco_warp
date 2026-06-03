@@ -3273,6 +3273,7 @@ def _solver_iteration(
 ):
   r"""One outer iteration of the solver; runs once per `wp.capture_while` tick of `_solve`.
 
+  <md>
   Default (Newton) path is annotated below. CG-specific bits are gated on `m.opt.solver`.
 
   Five conceptual steps:
@@ -3281,11 +3282,16 @@ def _solver_iteration(
     (4) direction update        →  `solve_search_update` (Newton: $s \leftarrow -M_g$; CG: $s \leftarrow -M_g + \beta s$ with $\beta$ from `solve_beta`)
     (5) converge                →  `solve_done`
   In CG, step (4) also reads $\nabla\phi^{\text{prev}}, M_g^{\text{prev}}$ that `solve_prev_grad_Mgrad` snapshots BEFORE step (3) overwrites them — that's why it sits between (2) and (3). Newton skips that snapshot since $-M_g$ doesn't depend on history.
+  </md>
   """
-  # (1) + (2) line search and step: find $\alpha = \arg\min_\alpha \phi(\ddot q + \alpha s)$ and apply $\ddot q \leftarrow \ddot q + \alpha s$ (also updates `Jaref = J\ddot q - a^{\text{ref}}` along the way).
+  # <md>
+  # (1) + (2) line search and step: find $\alpha = \arg\min_\alpha \phi(\ddot q + \alpha s)$ and apply $\ddot q \leftarrow \ddot q + \alpha s$ (also updates $\text{Jaref} = J\ddot q - a^{\text{ref}}$ along the way).
+  # </md>
   _linesearch(m, d, ctx, step_size_cost)
 
+  # <md>
   # (4-prep, CG only) snapshot $\nabla\phi^{\text{prev}} \leftarrow \nabla\phi,\; M_g^{\text{prev}} \leftarrow M_g$ before (3) overwrites them — needed for the Polak-Ribière $\beta$ at (4). Newton path skips this: its Newton direction $-M_g$ doesn't depend on the previous gradient.
+  # </md>
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_prev_grad_Mgrad,
@@ -3304,16 +3310,30 @@ def _solver_iteration(
     # Must complete before update_constraint_efc which atomically increments.
     ctx.changed_efc_count.zero_()
 
+  # <md>
   # (3a) recompute cost $\phi$, per-row $\lambda$ (`d.efc.force`), and gradient contributions at the new $\ddot q$; also reclassifies each row's active-set state (used for incremental Hessian below).
+  # </md>
   _update_constraint(m, d, ctx, track_changes=incremental)
 
-  # (3b) Newton: factor $H = M + J_{\mathcal{A}}^{\top} D_{\mathcal{A}} J_{\mathcal{A}}$ and solve $H\,M_g = \nabla\phi$. Incremental variant only updates rows of $H$ whose active-set state changed since last iteration — cheaper, but unsafe for elliptic cone (state changes are not tracked there). CG path just uses $M_g = M^{-1}\nabla\phi$ (no Hessian factor).
+  # <md>
+  # (3b) Newton Hessian step. Both branches below do TWO things — ASSEMBLE the matrix, then SOLVE it:
+  #   • ASSEMBLE H:  $H = M + J_{\mathcal{A}}^{\top} D_{\mathcal{A}} J_{\mathcal{A}}$
+  #       - full   (`_update_gradient`,             [solver.py:2911](solver.py)) → kernel `update_gradient_JTDAJ_dense_tiled` ([solver.py:2359](solver.py))
+  #       - incr.  (`_update_gradient_incremental`, [solver.py:3090](solver.py)) → patches only the active-set rows of $H$ that changed this iteration
+  #   • SOLVE $H\,M_g = \nabla\phi$ by dense Cholesky: `_cholesky_factorize_solve` ([solver.py:2818](solver.py))
+  #       → kernel `update_gradient_cholesky` ([solver.py:2722](solver.py)) = `wp.tile_cholesky` (factor) + `wp.tile_cholesky_solve` (back-substitution)
+  #   The Newton direction is then $-M_g$. (CG: no assemble/factor; $M_g = M^{-1}\nabla\phi$ via `smooth.solve_m` — not the Franka path.)
+  # </md>
   if incremental:
+    # default Franka path (NEWTON + non-elliptic cone): assemble-incrementally, then Cholesky-solve inside the same call
     _update_gradient_incremental(m, d, ctx)
   else:
+    # first iteration / elliptic cone: full assemble, then Cholesky-solve inside the same call
     _update_gradient(m, d, ctx)
 
+  # <md>
   # (4a, CG only) Polak-Ribière coefficient: $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$. Newton path leaves $\beta$ stale — `solve_search_update` ignores it for Newton.
+  # </md>
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_beta,
@@ -3322,10 +3342,14 @@ def _solver_iteration(
       outputs=[ctx.beta],
     )
 
+  # <md>
   # (4b-prep) clear `search_dot` ($\|s\|^2$ accumulator) for non-converged worlds; `solve_search_update` will atomic-add into it.
+  # </md>
   wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
 
+  # <md>
   # (4b) compose new search direction: Newton $s \leftarrow -M_g$; CG $s \leftarrow -M_g + \beta\, s$ (`solve` switches inside the kernel via `m.opt.solver`). Also recomputes $s\!\cdot\! s$.
+  # </md>
   wp.launch(
     solve_search_update,
     dim=(d.nworld, m.nv),
@@ -3333,7 +3357,9 @@ def _solver_iteration(
     outputs=[ctx.search, ctx.search_dot],
   )
 
+  # <md>
   # (5) convergence test (per world): $\texttt{done} \leftarrow (\sqrt{\nabla\phi^{\top} M_g}/\bar{m} < \texttt{tol})$ or $|\phi - \phi^{\text{prev}}| < \texttt{tol}\cdot\bar{m}$ or $n_{\text{iter}} \geq \texttt{iterations}$; for each world that newly becomes done, decrement `nsolving`. When `nsolving = 0`, `wp.capture_while` exits.
+  # </md>
   wp.launch(
     solve_done,
     dim=d.nworld,
@@ -3417,11 +3443,28 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
+  r"""Constrained forward-dynamics solve: turn the unconstrained $\ddot q_{\text{smooth}}$ into the constraint-satisfying $\ddot q$.
+
+  This is the public entry point invoked by `forward` / `step2` right after
+  `fwd_acceleration` has produced $\ddot q_{\text{smooth}} = M^{-1}\tau_{\text{smooth}}$ and
+  `constraint.make_constraint` has assembled the constraint system $(J, a^{\text{ref}}, D)$.
+  It dispatches between a trivial closed-form case and the iterative Newton/CG solver in `_solve`.
+  The result lands in `d.qacc`; the per-row multipliers $\lambda$ in `d.efc.force`.
+  """
+  # <md>
+  # $$\big(n_{\text{efc}}^{\max} = 0\big)\ \lor\ \big(n_v = 0\big)\;\Longrightarrow\;\ddot q \;=\; \ddot q_{\text{smooth}},\quad n_{\text{iter}} \leftarrow 0\quad\text{(no constraint rows or no DOFs: the constrained minimizer is exactly the unconstrained acceleration — nothing to solve)}$$
+  # </md>
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
+    # <md>
+    # $$\texttt{ctx} \;=\; \big\{\,\text{Jaref},\,M\ddot q,\,\phi,\,\nabla\phi,\,M_g,\,s,\,H,\,\beta,\,\ldots\big\}\quad\text{(allocate per-world scratch for the iterative solve; sized to }n_{\text{world}}\times n_v\text{, see }\texttt{create\_solver\_context}\text{)}$$
+    # </md>
     ctx = create_solver_context(m, d)
+    # <md>
+    # $$\ddot q^{*} \;=\; \arg\min_{\ddot q}\ \phi(\ddot q)\quad\text{(run damped Newton / nonlinear CG to convergence; writes }\ddot q^{*}\!\to\!\texttt{d.qacc},\ \lambda\!\to\!\texttt{d.efc.force})$$
+    # </md>
     _solve(m, d, ctx)
 
 
@@ -3509,16 +3552,39 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
   
   # <md>
-  # One iteration of `_solver_iteration` does, per non-converged world:
-  #   1. line search: $\alpha = \arg\min_{\alpha} \phi(\ddot q + \alpha s)$
-  #   2. step:        $\ddot q \leftarrow \ddot q + \alpha s$
-  #   3. update:      recompute $\text{Jaref},\,M\ddot q,\,\phi,\,\nabla\phi,\,M_g$ at new $\ddot q$
-  #   4. CG combine:  $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$ (Polak-Ribière), $s \leftarrow -M_g + \beta\, s$
-  #   5. converge:    if $\|\nabla\phi\|, |\Delta\phi|$ small or budget exhausted, set $\texttt{done}=\text{true}$ and decrement `nsolving`
-  #   
+  # One iteration of `_solver_iteration` ([solver.py:3267](solver.py)), per non-converged world.
+  # The three substantive numerical steps are **line search**, **Hessian assembly**, **Cholesky solve** —
+  # called out separately below (Newton default; CG bits parenthesized):
+  #
+  #   **(A) LINE SEARCH + step**  — `_linesearch` ([solver.py:1659](solver.py)):
+  #     $\alpha = \arg\min_{\alpha}\,\phi(\ddot q + \alpha s)$, then $\ddot q \leftarrow \ddot q + \alpha s$.
+  #     Builds $mv = M s$ (`support.mul_m`) and $jv = J s$, then minimizes the 1-D per-row quadratic cost
+  #     either in parallel over a fixed α-grid (`_linesearch_parallel`) or by an exact bracketing/Newton
+  #     sweep (`_linesearch_iterative`). The step on $\ddot q$ is applied *inside* this call.
+  #
+  #   **(B) constraint refresh**  — `_update_constraint` ([solver.py:2147](solver.py)):
+  #     recompute $\text{Jaref}=J\ddot q-a^{\text{ref}}$, cost $\phi$, per-row force $\lambda\!\to\!$`d.efc.force`,
+  #     active-set state, and $\nabla\phi = M(\ddot q-\ddot q_{\text{smooth}}) + J_{\mathcal{A}}^{\top}D_{\mathcal{A}}\text{Jaref}_{\mathcal{A}}$.
+  #
+  #   **(C) HESSIAN ASSEMBLY + CHOLESKY SOLVE**  — `_update_gradient` ([solver.py:2911](solver.py)):
+  #     *assemble* $H = M + J_{\mathcal{A}}^{\top}D_{\mathcal{A}}J_{\mathcal{A}}\,(+\,J^{\top}C(\text{Jaref})J$ for elliptic cone$)$
+  #         via `update_gradient_JTDAJ_dense_tiled` (+ `update_gradient_JTCJ_dense`) — this is the matrix build;
+  #     *solve* $H\,M_g = \nabla\phi$ by dense Cholesky in `_cholesky_factorize_solve` ([solver.py:2818](solver.py),
+  #         `wp.tile_cholesky` + `wp.tile_cholesky_solve`) → Newton direction $-M_g$.
+  #     (CG instead skips assembly entirely: $M_g = M^{-1}\nabla\phi$ via `smooth.solve_m`, reusing the LDLᵀ of $M$.
+  #      The Newton path may use `_update_gradient_incremental` to refactor only the changed rows of $H$.)
+  #
+  #   **(D) direction update**  — `solve_search_update`: Newton $s \leftarrow -M_g$;
+  #     CG $s \leftarrow -M_g + \beta\,s$ with $\beta = \dfrac{\nabla\phi^{\top}(M_g - M_g^{\text{prev}})}{\nabla\phi^{\text{prev}\,\top} M_g^{\text{prev}}}$ (Polak-Ribière, `solve_beta`).
+  #
+  #   **(E) converge**  — `solve_done`: if $\sqrt{\nabla\phi^{\top}M_g}/\bar m < \text{tol}$ or $|\Delta\phi|/\bar m < \text{tol}$ or
+  #     $n_{\text{iter}}\!\ge\!\text{iterations}$, set $\texttt{done}$ and decrement `nsolving`.
   # </md>
 
 
+  # <md>
+  # $$\textbf{repeat}\ \ \texttt{\_solver\_iteration}\ \ \textbf{while}\ \ \texttt{nsolving} > 0\quad\text{(device-side loop: the host issues the while once and the GPU re-runs the body until every world converges; }\texttt{nsolving}\text{ is decremented inside }\texttt{solve\_done}\text{, and the }n_{\text{iter}} \geq \texttt{iterations}\text{ cap forces termination)}$$
+  # </md>
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -3531,6 +3597,9 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
       nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, step_size_cost=step_size_cost, nsolving=nsolving
     )
   else:
+    # <md>
+    # $$\textbf{for}\ \ k = 1,\ldots,\texttt{iterations}:\ \ \texttt{\_solver\_iteration}\quad\text{(host-driven fixed-count fallback when CUDA-graph conditionals are unavailable, e.g. JAX backend; runs the full iteration budget regardless of early convergence — per-world }\texttt{done}\text{ flags make the extra ticks no-ops)}$$
+    # </md>
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.

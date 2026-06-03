@@ -100,7 +100,7 @@ Popular schemes for forward dynamics:
 ## II: D
 
 $$
-m(v) = M(q^{\theta}(v)(v - v_0) - \delta t \cdot k(q^{\theta}(v), v^{\theta})
+m(v) = M(q^{\theta}(v))(v - v_0) - \delta t \cdot k(q^{\theta}(v), v^{\theta})
 $$
 
 we use newton's method to solve $m(v^*) = 0$.

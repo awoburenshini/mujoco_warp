@@ -114,5 +114,9 @@ l_n(v_n)
 \end{aligned}
 $$
 
-> Note: $v_n > 0$ separating, $v_n <0$ approaching (paper convention).\
-> Contact/force active for $v_n < \hat{v}$; $v_n \geq \hat{v}$ means broken, $l_n = 0$.
+> Note:  
+> $v_n > 0$ separating, $v_n <0$ approaching (paper convention).\
+> Contact/force active for $v_n < \hat{v}$; $v_n \geq \hat{v}$ means broken, $l_n = 0$.\
+> $\phi_0 < 0$ means penetration
+
+## Implementation details:
